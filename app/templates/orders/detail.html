@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/orders" class="text-decoration-none">ออเดอร์</a></li>
+<li class="breadcrumb-item active">รายละเอียด</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-center">
+    <h1 class="page-title">
+        <span id="orderIdTitle">โหลด...</span>
+    </h1>
+    <div id="orderActions">
+        <!-- Actions will be loaded dynamically -->
+    </div>
+</div>
+
+<div class="row g-3">
+    <!-- Order Info -->
+    <div class="col-lg-8">
+        <div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-info-circle me-2"></i>ข้อมูลออเดอร์</span>
+                <span class="badge" id="statusBadge">-</span>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label text-muted">รหัสออเดอร์</label>
+                        <div class="fw-bold text-mono" id="externalOrderId">-</div>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label text-muted">ช่องทาง</label>
+                        <div id="channelBadge">-</div>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label text-muted">วันที่สร้าง</label>
+                        <div id="orderDate">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Customer Info -->
+        <div class="card mb-3">
+            <div class="card-header">
+                <i class="bi bi-person me-2"></i>ข้อมูลลูกค้า
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label text-muted">ชื่อ</label>
+                        <div class="fw-semibold" id="customerName">-</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label text-muted">เบอร์โทร</label>
+                        <div id="customerPhone">-</div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label text-muted">ที่อยู่จัดส่ง</label>
+                        <div id="customerAddress">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Order Items -->
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-cart me-2"></i>รายการสินค้า
+            </div>
+            <div class="card-body p-0">
+                <table class="table mb-0">
+                    <thead>
+                        <tr>
+                            <th>SKU</th>
+                            <th>ชื่อสินค้า</th>
+                            <th class="text-center">จำนวน</th>
+                            <th class="text-end">ราคา/หน่วย</th>
+                            <th class="text-end">รวม</th>
+                        </tr>
+                    </thead>
+                    <tbody id="orderItems">
+                        <tr>
+                            <td colspan="5" class="text-center text-muted py-4">กำลังโหลด...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Summary -->
+    <div class="col-lg-4">
+        <div class="card mb-3">
+            <div class="card-header">
+                <i class="bi bi-calculator me-2"></i>สรุปยอด
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-muted">ราคารวม</span>
+                    <span class="text-mono" id="subtotal">฿0</span>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-muted">ส่วนลด</span>
+                    <span class="text-mono text-danger" id="discount">-฿0</span>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-muted">ค่าจัดส่ง</span>
+                    <span class="text-mono" id="shipping">฿0</span>
+                </div>
+                <hr>
+                <div class="d-flex justify-content-between fs-5 fw-bold">
+                    <span>ยอดรวมสุทธิ</span>
+                    <span class="text-primary text-mono" id="totalAmount">฿0</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Payment Status -->
+        <div class="card mb-3">
+            <div class="card-header">
+                <i class="bi bi-credit-card me-2"></i>การชำระเงิน
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-muted">วิธีชำระ</span>
+                    <span id="paymentMethod">-</span>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-muted">สถานะ</span>
+                    <span class="badge" id="paymentStatusBadge">-</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Status Actions -->
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-arrow-right-circle me-2"></i>เปลี่ยนสถานะ
+            </div>
+            <div class="card-body" id="statusActions">
+                <div class="text-muted text-center">กำลังโหลด...</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    const orderId = "{{ order_id }}";
+    
+    document.addEventListener('DOMContentLoaded', () => {
+        loadOrder();
+    });
+    
+    async function loadOrder() {
+        try {
+            const res = await fetch(`/api/orders/${orderId}`);
+            if (res.ok) {
+                const order = await res.json();
+                renderOrder(order);
+            } else {
+                document.getElementById('orderIdTitle').textContent = 'ไม่พบออเดอร์';
+            }
+        } catch (e) {
+            console.error('Failed to load order:', e);
+        }
+    }
+    
+    function renderOrder(order) {
+        document.getElementById('orderIdTitle').textContent = order.external_order_id || order.id.slice(0,8);
+        document.getElementById('externalOrderId').textContent = order.external_order_id || order.id;
+        document.getElementById('channelBadge').innerHTML = `<span class="badge channel-${order.channel_code}">${order.channel_code}</span>`;
+        document.getElementById('orderDate').textContent = order.created_at ? new Date(order.created_at).toLocaleString('th-TH') : '-';
+        
+        document.getElementById('statusBadge').className = `badge status-${order.status_normalized?.toLowerCase()}`;
+        document.getElementById('statusBadge').textContent = order.status_normalized;
+        
+        document.getElementById('customerName').textContent = order.customer_name || '-';
+        document.getElementById('customerPhone').textContent = order.customer_phone || '-';
+        document.getElementById('customerAddress').textContent = order.customer_address || '-';
+        
+        document.getElementById('subtotal').textContent = `฿${order.subtotal_amount.toFixed(2)}`;
+        document.getElementById('discount').textContent = `-฿${order.discount_amount.toFixed(2)}`;
+        document.getElementById('shipping').textContent = `฿${order.shipping_fee.toFixed(2)}`;
+        document.getElementById('totalAmount').textContent = `฿${order.total_amount.toFixed(2)}`;
+        
+        document.getElementById('paymentMethod').textContent = order.payment_method || '-';
+        document.getElementById('paymentStatusBadge').className = 'badge ' + (order.payment_status === 'PAID' ? 'bg-success' : 'bg-warning text-dark');
+        document.getElementById('paymentStatusBadge').textContent = order.payment_status || 'PENDING';
+        
+        // Render items
+        const itemsTbody = document.getElementById('orderItems');
+        if (order.items && order.items.length > 0) {
+            itemsTbody.innerHTML = order.items.map(item => `
+                <tr>
+                    <td class="text-mono">${item.sku}</td>
+                    <td>
+                        ${item.product_name}
+                        ${item.line_type !== 'NORMAL' ? `<span class="badge bg-info ms-1">${item.line_type}</span>` : ''}
+                    </td>
+                    <td class="text-center">${item.quantity}</td>
+                    <td class="text-end text-mono">฿${item.unit_price.toFixed(2)}</td>
+                    <td class="text-end text-mono">฿${item.line_total.toFixed(2)}</td>
+                </tr>
+            `).join('');
+        } else {
+            itemsTbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">ไม่มีรายการ</td></tr>';
+        }
+        
+        // Render status actions
+        renderStatusActions(order.status_normalized);
+        
+        // Render order actions
+        document.getElementById('orderActions').innerHTML = `
+            <a href="/orders/${order.id}/edit" class="btn btn-outline-primary me-2">
+                <i class="bi bi-pencil me-1"></i> แก้ไข
+            </a>
+            <button class="btn btn-outline-secondary" onclick="printLabel()">
+                <i class="bi bi-printer me-1"></i> พิมพ์ใบปะหน้า
+            </button>
+        `;
+    }
+    
+    function renderStatusActions(currentStatus) {
+        const transitions = {
+            'NEW': ['PAID', 'CANCELLED'],
+            'PAID': ['PACKING', 'CANCELLED'],
+            'PACKING': ['SHIPPED'],
+            'SHIPPED': ['DELIVERED', 'RETURNED'],
+            'DELIVERED': ['RETURNED'],
+            'RETURNED': [],
+            'CANCELLED': []
+        };
+        
+        const allowed = transitions[currentStatus] || [];
+        const container = document.getElementById('statusActions');
+        
+        if (allowed.length === 0) {
+            container.innerHTML = '<div class="text-muted text-center">ไม่สามารถเปลี่ยนสถานะได้</div>';
+            return;
+        }
+        
+        container.innerHTML = allowed.map(status => {
+            const btnClass = {
+                'PAID': 'btn-success',
+                'PACKING': 'btn-warning',
+                'SHIPPED': 'btn-info',
+                'DELIVERED': 'btn-success',
+                'CANCELLED': 'btn-danger',
+                'RETURNED': 'btn-secondary'
+            }[status] || 'btn-outline-primary';
+            
+            return `<button class="btn ${btnClass} w-100 mb-2" onclick="changeStatus('${status}')">${status}</button>`;
+        }).join('');
+    }
+    
+    async function changeStatus(newStatus) {
+        if (!confirm(`ต้องการเปลี่ยนสถานะเป็น ${newStatus} ใช่หรือไม่?`)) return;
+        
+        try {
+            const res = await fetch(`/api/orders/${orderId}/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: newStatus })
+            });
+            
+            if (res.ok) {
+                loadOrder();
+            } else {
+                const error = await res.json();
+                alert(error.detail || 'ไม่สามารถเปลี่ยนสถานะได้');
+            }
+        } catch (e) {
+            console.error('Failed to change status:', e);
+            alert('เกิดข้อผิดพลาด');
+        }
+    }
+    
+    async function printLabel() {
+        window.open(`/api/orders/${orderId}/label`, '_blank');
+    }
+</script>
+{% endblock %}

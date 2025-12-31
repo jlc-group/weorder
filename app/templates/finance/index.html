@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item active">การเงิน</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-center">
+    <h1 class="page-title">การเงิน</h1>
+    <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#paymentModal">
+        <i class="bi bi-cash-coin me-1"></i> บันทึกรับชำระ
+    </button>
+</div>
+
+<!-- Stats -->
+<div class="row g-3 mb-4">
+    <div class="col-sm-6 col-lg-3">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="fs-4 fw-bold text-warning" id="pendingPayment">฿0</div>
+                <div class="small text-muted">รอชำระ</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-sm-6 col-lg-3">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="fs-4 fw-bold text-success" id="receivedToday">฿0</div>
+                <div class="small text-muted">รับวันนี้</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Orders with Payment Status -->
+<div class="card">
+    <div class="card-header">
+        <i class="bi bi-receipt me-2"></i>ออเดอร์รอชำระ
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>รหัสออเดอร์</th>
+                        <th>ลูกค้า</th>
+                        <th>ช่องทาง</th>
+                        <th class="text-end">ยอดรวม</th>
+                        <th class="text-end">ชำระแล้ว</th>
+                        <th class="text-end">คงค้าง</th>
+                        <th>สถานะ</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="ordersTable">
+                    <tr>
+                        <td colspan="8" class="text-center text-muted py-5">
+                            กำลังโหลด...
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Payment Modal -->
+<div class="modal fade" id="paymentModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">บันทึกรับชำระ</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="paymentForm" onsubmit="savePayment(event)">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">ออเดอร์</label>
+                        <select class="form-select" name="order_id" id="paymentOrderSelect" required>
+                            <option value="">เลือกออเดอร์...</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">จำนวนเงิน</label>
+                        <input type="number" class="form-control" name="amount" step="0.01" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">วิธีชำระ</label>
+                        <select class="form-select" name="payment_method">
+                            <option value="TRANSFER">โอนเงิน</option>
+                            <option value="CASH">เงินสด</option>
+                            <option value="COD">COD</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">หมายเหตุ</label>
+                        <input type="text" class="form-control" name="note">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">ยกเลิก</button>
+                    <button type="submit" class="btn btn-success">
+                        <i class="bi bi-check-circle me-1"></i> บันทึก
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let paymentModal;
+    
+    document.addEventListener('DOMContentLoaded', () => {
+        paymentModal = new bootstrap.Modal(document.getElementById('paymentModal'));
+        loadOrders();
+    });
+    
+    async function loadOrders() {
+        try {
+            const res = await fetch('/api/orders?status=NEW&per_page=100');
+            if (res.ok) {
+                const data = await res.json();
+                renderOrders(data.orders);
+                
+                // Populate select
+                const select = document.getElementById('paymentOrderSelect');
+                select.innerHTML = '<option value="">เลือกออเดอร์...</option>' +
+                    data.orders.map(o => `<option value="${o.id}">${o.external_order_id || o.id.slice(0,8)} - ฿${o.total_amount}</option>`).join('');
+            }
+        } catch (e) {
+            console.error('Failed to load orders:', e);
+        }
+    }
+    
+    function renderOrders(orders) {
+        const tbody = document.getElementById('ordersTable');
+        
+        if (!orders || orders.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="8" class="text-center text-muted py-5">
+                        <i class="bi bi-check-circle fs-1 d-block mb-2 text-success"></i>
+                        ไม่มีออเดอร์รอชำระ
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+        
+        tbody.innerHTML = orders.map(o => {
+            const paid = o.paid_amount || 0;
+            const pending = (o.total_amount || 0) - paid;
+            
+            return `
+                <tr>
+                    <td>
+                        <a href="/orders/${o.id}" class="fw-semibold text-decoration-none">
+                            ${o.external_order_id || o.id.slice(0,8)}
+                        </a>
+                    </td>
+                    <td>${o.customer_name || '-'}</td>
+                    <td><span class="badge channel-${o.channel_code}">${o.channel_code}</span></td>
+                    <td class="text-end text-mono">฿${parseFloat(o.total_amount || 0).toFixed(2)}</td>
+                    <td class="text-end text-mono text-success">฿${parseFloat(paid).toFixed(2)}</td>
+                    <td class="text-end text-mono text-danger">฿${parseFloat(pending).toFixed(2)}</td>
+                    <td><span class="badge bg-warning text-dark">${o.payment_status || 'PENDING'}</span></td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-success" onclick="quickPay('${o.id}', ${pending})">
+                            <i class="bi bi-cash"></i>
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+    
+    function quickPay(orderId, amount) {
+        document.getElementById('paymentOrderSelect').value = orderId;
+        document.querySelector('[name="amount"]').value = amount.toFixed(2);
+        paymentModal.show();
+    }
+    
+    async function savePayment(e) {
+        e.preventDefault();
+        
+        const form = document.getElementById('paymentForm');
+        const formData = new FormData(form);
+        
+        const data = {
+            order_id: formData.get('order_id'),
+            amount: parseFloat(formData.get('amount')),
+            payment_method: formData.get('payment_method'),
+            note: formData.get('note')
+        };
+        
+        try {
+            const res = await fetch('/api/payments', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            
+            if (res.ok) {
+                paymentModal.hide();
+                form.reset();
+                loadOrders();
+            } else {
+                const error = await res.json();
+                alert(error.detail || 'เกิดข้อผิดพลาด');
+            }
+        } catch (e) {
+            console.error('Failed to save payment:', e);
+            alert('เกิดข้อผิดพลาดในการบันทึก');
+        }
+    }
+</script>
+{% endblock %}

@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item active">ออเดอร์</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-center">
+    <h1 class="page-title">จัดการออเดอร์</h1>
+    <div>
+        <a href="/orders/create" class="btn btn-primary">
+            <i class="bi bi-plus-circle me-1"></i> สร้างออเดอร์
+        </a>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-3">
+    <div class="card-body py-2">
+        <form id="filterForm" class="row g-2 align-items-center">
+            <!-- Channel Tabs -->
+            <div class="col-12 mb-2">
+                <ul class="nav nav-pills nav-fill" id="channelTabs">
+                    <li class="nav-item">
+                        <a class="nav-link active" href="#" data-channel="all">ทั้งหมด</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-channel="shopee">
+                            <span class="badge channel-shopee me-1">S</span> Shopee
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-channel="lazada">
+                            <span class="badge channel-lazada me-1">L</span> Lazada
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-channel="tiktok">
+                            <span class="badge channel-tiktok me-1">T</span> TikTok
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-channel="facebook">
+                            <span class="badge channel-facebook me-1">F</span> Facebook
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-channel="manual">
+                            <span class="badge channel-manual me-1">M</span> Manual
+                        </a>
+                    </li>
+                </ul>
+            </div>
+            
+            <!-- Status & Search -->
+            <div class="col-md-3">
+                <select class="form-select form-select-sm" id="statusFilter">
+                    <option value="all">ทุกสถานะ</option>
+                    <option value="NEW">NEW - ใหม่</option>
+                    <option value="PAID">PAID - ชำระแล้ว</option>
+                    <option value="PACKING">PACKING - กำลังแพ็ค</option>
+                    <option value="SHIPPED">SHIPPED - จัดส่งแล้ว</option>
+                    <option value="DELIVERED">DELIVERED - ส่งถึงแล้ว</option>
+                    <option value="CANCELLED">CANCELLED - ยกเลิก</option>
+                </select>
+            </div>
+            <div class="col-md-4">
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input type="text" class="form-control" id="searchInput" placeholder="ค้นหารหัส, ชื่อ, เบอร์...">
+                </div>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-primary btn-sm w-100">
+                    <i class="bi bi-filter me-1"></i> กรอง
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Orders Table -->
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th style="width: 40px;">
+                            <input type="checkbox" class="form-check-input" id="selectAll">
+                        </th>
+                        <th>รหัสออเดอร์</th>
+                        <th>ช่องทาง</th>
+                        <th>ลูกค้า</th>
+                        <th>รายการ</th>
+                        <th class="text-end">ยอดรวม</th>
+                        <th>สถานะ</th>
+                        <th>วันที่</th>
+                        <th style="width: 120px;"></th>
+                    </tr>
+                </thead>
+                <tbody id="ordersTable">
+                    <tr>
+                        <td colspan="9" class="text-center text-muted py-5">
+                            <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+                            <span id="loadingText">กำลังโหลด...</span>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- Pagination -->
+    <div class="card-footer d-flex justify-content-between align-items-center">
+        <div class="text-muted small" id="paginationInfo">
+            แสดง 0 รายการ
+        </div>
+        <nav>
+            <ul class="pagination pagination-sm mb-0" id="pagination">
+            </ul>
+        </nav>
+    </div>
+</div>
+
+<!-- Bulk Actions -->
+<div class="position-fixed bottom-0 start-50 translate-middle-x mb-4 d-none" id="bulkActions">
+    <div class="card shadow-lg border-primary">
+        <div class="card-body py-2 px-3 d-flex align-items-center gap-3">
+            <span class="text-primary fw-semibold">
+                <span id="selectedCount">0</span> รายการที่เลือก
+            </span>
+            <button class="btn btn-sm btn-outline-primary" onclick="printLabels()">
+                <i class="bi bi-printer me-1"></i> พิมพ์ใบปะหน้า
+            </button>
+            <button class="btn btn-sm btn-outline-warning" onclick="updateStatus('PACKING')">
+                <i class="bi bi-box2 me-1"></i> เปลี่ยนเป็น PACKING
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let currentPage = 1;
+    let currentChannel = 'all';
+    let currentStatus = 'all';
+    let selectedOrders = new Set();
+    
+    // Channel tabs
+    document.querySelectorAll('#channelTabs .nav-link').forEach(tab => {
+        tab.addEventListener('click', (e) => {
+            e.preventDefault();
+            document.querySelectorAll('#channelTabs .nav-link').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            currentChannel = tab.dataset.channel;
+            currentPage = 1;
+            loadOrders();
+        });
+    });
+    
+    // Filter form
+    document.getElementById('filterForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        currentPage = 1;
+        loadOrders();
+    });
+    
+    // Status filter
+    document.getElementById('statusFilter').addEventListener('change', () => {
+        currentStatus = document.getElementById('statusFilter').value;
+        currentPage = 1;
+        loadOrders();
+    });
+    
+    // Select all checkbox
+    document.getElementById('selectAll').addEventListener('change', (e) => {
+        const checkboxes = document.querySelectorAll('.order-checkbox');
+        checkboxes.forEach(cb => {
+            cb.checked = e.target.checked;
+            if (e.target.checked) {
+                selectedOrders.add(cb.value);
+            } else {
+                selectedOrders.delete(cb.value);
+            }
+        });
+        updateBulkActions();
+    });
+    
+    function updateBulkActions() {
+        const bulkActions = document.getElementById('bulkActions');
+        const selectedCount = document.getElementById('selectedCount');
+        if (selectedOrders.size > 0) {
+            bulkActions.classList.remove('d-none');
+            selectedCount.textContent = selectedOrders.size;
+        } else {
+            bulkActions.classList.add('d-none');
+        }
+    }
+    
+    async function loadOrders() {
+        const search = document.getElementById('searchInput').value;
+        const params = new URLSearchParams({
+            page: currentPage,
+            channel: currentChannel,
+            status: currentStatus,
+            search: search
+        });
+        
+        try {
+            const res = await fetch(`/api/orders?${params}`);
+            if (res.ok) {
+                const data = await res.json();
+                renderOrders(data.orders);
+                renderPagination(data.total, data.page, data.per_page);
+            }
+        } catch (e) {
+            console.error('Failed to load orders:', e);
+            document.getElementById('loadingText').textContent = 'ไม่สามารถโหลดข้อมูลได้';
+        }
+    }
+    
+    function renderOrders(orders) {
+        const tbody = document.getElementById('ordersTable');
+        
+        if (!orders || orders.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="9" class="text-center text-muted py-5">
+                        <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+                        ไม่พบออเดอร์
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+        
+        tbody.innerHTML = orders.map(order => `
+            <tr class="${selectedOrders.has(order.id) ? 'table-active' : ''}">
+                <td>
+                    <input type="checkbox" class="form-check-input order-checkbox" 
+                           value="${order.id}" ${selectedOrders.has(order.id) ? 'checked' : ''}
+                           onchange="toggleOrder('${order.id}')">
+                </td>
+                <td>
+                    <a href="/orders/${order.id}" class="fw-semibold text-decoration-none">
+                        ${order.external_order_id || order.id.slice(0,8)}
+                    </a>
+                </td>
+                <td>
+                    <span class="badge channel-${order.channel_code}">${order.channel_code}</span>
+                </td>
+                <td>
+                    <div>${order.customer_name || '-'}</div>
+                    <small class="text-muted">${order.customer_phone || ''}</small>
+                </td>
+                <td>
+                    <small class="text-muted">${order.items?.length || 0} รายการ</small>
+                </td>
+                <td class="text-end text-mono">
+                    ${formatNumber(order.total_amount || 0)}
+                </td>
+                <td>
+                    <span class="badge status-${order.status_normalized?.toLowerCase()}">${order.status_normalized}</span>
+                </td>
+                <td>
+                    <small>${new Date(order.created_at).toLocaleDateString('th-TH')}</small>
+                </td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        <a href="/orders/${order.id}" class="btn btn-outline-primary" title="ดูรายละเอียด">
+                            <i class="bi bi-eye"></i>
+                        </a>
+                        <a href="/orders/${order.id}/edit" class="btn btn-outline-secondary" title="แก้ไข">
+                            <i class="bi bi-pencil"></i>
+                        </a>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+    }
+    
+    function renderPagination(total, page, perPage) {
+        const totalPages = Math.ceil(total / perPage);
+        const info = document.getElementById('paginationInfo');
+        const pagination = document.getElementById('pagination');
+        
+        const start = (page - 1) * perPage + 1;
+        const end = Math.min(page * perPage, total);
+        info.textContent = `แสดง ${start}-${end} จาก ${total} รายการ`;
+        
+        let html = '';
+        if (totalPages > 1) {
+            html += `<li class="page-item ${page === 1 ? 'disabled' : ''}">
+                <a class="page-link" href="#" onclick="goToPage(${page-1})">ก่อนหน้า</a>
+            </li>`;
+            
+            for (let i = 1; i <= Math.min(5, totalPages); i++) {
+                html += `<li class="page-item ${i === page ? 'active' : ''}">
+                    <a class="page-link" href="#" onclick="goToPage(${i})">${i}</a>
+                </li>`;
+            }
+            
+            html += `<li class="page-item ${page === totalPages ? 'disabled' : ''}">
+                <a class="page-link" href="#" onclick="goToPage(${page+1})">ถัดไป</a>
+            </li>`;
+        }
+        pagination.innerHTML = html;
+    }
+    
+    function goToPage(page) {
+        currentPage = page;
+        loadOrders();
+    }
+    
+    function toggleOrder(id) {
+        if (selectedOrders.has(id)) {
+            selectedOrders.delete(id);
+        } else {
+            selectedOrders.add(id);
+        }
+        updateBulkActions();
+    }
+    
+    function printLabels() {
+        const ids = Array.from(selectedOrders).join(',');
+        window.open(`/packing/print?ids=${ids}`, '_blank');
+    }
+    
+    // Initial load
+    loadOrders();
+</script>
+{% endblock %}

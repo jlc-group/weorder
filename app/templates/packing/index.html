@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item active">แพ็คสินค้า</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-center">
+    <h1 class="page-title">แพ็คสินค้า</h1>
+    <div>
+        <button class="btn btn-outline-primary" onclick="loadQueue()">
+            <i class="bi bi-arrow-clockwise me-1"></i> รีเฟรช
+        </button>
+    </div>
+</div>
+
+<!-- Tabs -->
+<ul class="nav nav-pills mb-3">
+    <li class="nav-item">
+        <a class="nav-link active" href="#queue" data-bs-toggle="tab">
+            <i class="bi bi-list-check me-1"></i> คิวแพ็คออเดอร์
+            <span class="badge bg-warning text-dark ms-1" id="queueCount">0</span>
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="#prepack" data-bs-toggle="tab">
+            <i class="bi bi-box2 me-1"></i> กล่อง Pre-pack
+        </a>
+    </li>
+</ul>
+
+<div class="tab-content">
+    <!-- Packing Queue -->
+    <div class="tab-pane fade show active" id="queue">
+        <div class="card">
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width: 40px;">
+                                    <input type="checkbox" class="form-check-input" id="selectAllPack">
+                                </th>
+                                <th>รหัสออเดอร์</th>
+                                <th>ช่องทาง</th>
+                                <th>ลูกค้า</th>
+                                <th>รายการ</th>
+                                <th>สถานะ</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="packingQueue">
+                            <tr>
+                                <td colspan="7" class="text-center text-muted py-5">
+                                    กำลังโหลด...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="card-footer">
+                <button class="btn btn-primary" id="printSelectedBtn" disabled onclick="printSelected()">
+                    <i class="bi bi-printer me-1"></i> พิมพ์ใบปะหน้าที่เลือก
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Pre-pack Boxes -->
+    <div class="tab-pane fade" id="prepack">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>กล่อง Pre-pack</span>
+                <button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#createBoxModal">
+                    <i class="bi bi-plus"></i> สร้างกล่องใหม่
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Box UID</th>
+                                <th>Set SKU</th>
+                                <th>คลัง</th>
+                                <th>สถานะ</th>
+                                <th>สร้างเมื่อ</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="prepackTable">
+                            <tr>
+                                <td colspan="6" class="text-center text-muted py-5">
+                                    ยังไม่มีกล่อง Pre-pack
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Print Modal -->
+<div class="modal fade" id="printModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">ใบปะหน้าพัสดุ</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="printContent">
+                <!-- Label content here -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">ปิด</button>
+                <button type="button" class="btn btn-primary" onclick="window.print()">
+                    <i class="bi bi-printer me-1"></i> พิมพ์
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let selectedForPrint = new Set();
+    let printModal;
+    
+    document.addEventListener('DOMContentLoaded', () => {
+        printModal = new bootstrap.Modal(document.getElementById('printModal'));
+        loadQueue();
+        loadPrepackBoxes();
+    });
+    
+    document.getElementById('selectAllPack').addEventListener('change', (e) => {
+        document.querySelectorAll('.pack-checkbox').forEach(cb => {
+            cb.checked = e.target.checked;
+            if (e.target.checked) {
+                selectedForPrint.add(cb.value);
+            } else {
+                selectedForPrint.delete(cb.value);
+            }
+        });
+        updatePrintButton();
+    });
+    
+    function updatePrintButton() {
+        const btn = document.getElementById('printSelectedBtn');
+        btn.disabled = selectedForPrint.size === 0;
+        btn.innerHTML = `<i class="bi bi-printer me-1"></i> พิมพ์ใบปะหน้าที่เลือก (${selectedForPrint.size})`;
+    }
+    
+    async function loadQueue() {
+        try {
+            const res = await fetch('/api/orders?status=PAID&per_page=100');
+            if (res.ok) {
+                const data = await res.json();
+                renderQueue(data.orders);
+                document.getElementById('queueCount').textContent = data.orders.length;
+            }
+        } catch (e) {
+            console.error('Failed to load packing queue:', e);
+        }
+    }
+    
+    function renderQueue(orders) {
+        const tbody = document.getElementById('packingQueue');
+        
+        if (!orders || orders.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="7" class="text-center text-muted py-5">
+                        <i class="bi bi-check-circle fs-1 d-block mb-2 text-success"></i>
+                        ไม่มีออเดอร์รอแพ็ค
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+        
+        tbody.innerHTML = orders.map(order => `
+            <tr>
+                <td>
+                    <input type="checkbox" class="form-check-input pack-checkbox" 
+                           value="${order.id}" onchange="togglePrint('${order.id}')">
+                </td>
+                <td>
+                    <a href="/orders/${order.id}" class="fw-semibold text-decoration-none">
+                        ${order.external_order_id || order.id.slice(0,8)}
+                    </a>
+                </td>
+                <td><span class="badge channel-${order.channel_code}">${order.channel_code}</span></td>
+                <td>
+                    <div>${order.customer_name || '-'}</div>
+                    <small class="text-muted">${order.customer_phone || ''}</small>
+                </td>
+                <td>
+                    ${(order.items || []).map(item => `
+                        <div class="small">
+                            <span class="text-mono">${item.sku}</span> x ${item.quantity}
+                        </div>
+                    `).join('')}
+                </td>
+                <td><span class="badge status-${order.status_normalized?.toLowerCase()}">${order.status_normalized}</span></td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-primary" onclick="printLabel('${order.id}')" title="พิมพ์ใบปะหน้า">
+                            <i class="bi bi-printer"></i>
+                        </button>
+                        <button class="btn btn-outline-success" onclick="markPacked('${order.id}')" title="เปลี่ยนเป็น PACKING">
+                            <i class="bi bi-check"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+    }
+    
+    function togglePrint(id) {
+        if (selectedForPrint.has(id)) {
+            selectedForPrint.delete(id);
+        } else {
+            selectedForPrint.add(id);
+        }
+        updatePrintButton();
+    }
+    
+    async function printLabel(orderId) {
+        try {
+            const res = await fetch(`/api/orders/${orderId}/label`);
+            if (res.ok) {
+                const html = await res.text();
+                document.getElementById('printContent').innerHTML = html;
+                printModal.show();
+            }
+        } catch (e) {
+            console.error('Failed to get label:', e);
+        }
+    }
+    
+    function printSelected() {
+        const ids = Array.from(selectedForPrint).join(',');
+        window.open(`/packing/print?ids=${ids}`, '_blank');
+    }
+    
+    async function markPacked(orderId) {
+        try {
+            const res = await fetch(`/api/orders/${orderId}/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'PACKING' })
+            });
+            
+            if (res.ok) {
+                loadQueue();
+            } else {
+                const error = await res.json();
+                alert(error.detail || 'ไม่สามารถเปลี่ยนสถานะได้');
+            }
+        } catch (e) {
+            console.error('Failed to mark as packed:', e);
+        }
+    }
+    
+    async function loadPrepackBoxes() {
+        try {
+            const res = await fetch('/api/prepack-boxes');
+            if (res.ok) {
+                const data = await res.json();
+                renderPrepackBoxes(data);
+            }
+        } catch (e) {
+            console.error('Failed to load prepack boxes:', e);
+        }
+    }
+    
+    function renderPrepackBoxes(boxes) {
+        const tbody = document.getElementById('prepackTable');
+        
+        if (!boxes || boxes.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="text-center text-muted py-5">
+                        ยังไม่มีกล่อง Pre-pack
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+        
+        tbody.innerHTML = boxes.map(box => `
+            <tr>
+                <td class="text-mono fw-semibold">${box.box_uid}</td>
+                <td>${box.set_sku || '-'}</td>
+                <td>${box.warehouse_name || '-'}</td>
+                <td>
+                    <span class="badge ${box.status === 'PREPACK_READY' ? 'bg-success' : 'bg-secondary'}">
+                        ${box.status}
+                    </span>
+                </td>
+                <td><small>${new Date(box.created_at).toLocaleString('th-TH')}</small></td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary" title="ดูรายละเอียด">
+                        <i class="bi bi-eye"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    }
+</script>
+{% endblock %}

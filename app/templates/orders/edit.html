@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/orders" class="text-decoration-none">ออเดอร์</a></li>
+<li class="breadcrumb-item active">แก้ไข</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">แก้ไขออเดอร์ <span id="orderIdTitle"></span></h1>
+</div>
+
+<div class="text-center py-5">
+    <i class="bi bi-tools fs-1 text-muted d-block mb-3"></i>
+    <p class="text-muted">หน้าแก้ไขออเดอร์กำลังพัฒนา</p>
+    <a href="/orders/{{ order_id }}" class="btn btn-primary">กลับหน้ารายละเอียด</a>
+</div>
+{% endblock %}
