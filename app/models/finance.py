@@ -78,3 +78,26 @@ class PlatformFeeLedger(Base, UUIDMixin, TimestampMixin):
     fee_date = Column(DateTime(timezone=True))
     payout_reference = Column(String(100))
     raw_data = Column(JSONB)
+
+class MarketplaceTransaction(Base, UUIDMixin, TimestampMixin):
+    """
+    Detailed Marketplace Transaction (Money Trail)
+    Stores every financial line item: Income (Item Price), Expense (Commission, Shipping, etc.)
+    """
+    __tablename__ = "marketplace_transaction"
+    
+    order_id = Column(UUID(as_uuid=True), ForeignKey("order_header.id"), nullable=True, index=True)
+    platform = Column(String(50), nullable=False, index=True)  # shopee, tiktok, lazada
+    
+    # Transaction Details
+    transaction_type = Column(String(100), nullable=False)  # ITEM_PRICE, COMMISSION_FEE, SHIPPING_FEE, ESCROW_RELEASE
+    amount = Column(Numeric(12, 2), nullable=False)  # Positive = Income, Negative = Expense
+    currency = Column(String(3), default="THB")
+    
+    transaction_date = Column(DateTime(timezone=True), index=True)
+    status = Column(String(20), default="COMPLETED")
+    
+    # Context
+    description = Column(Text)
+    payout_reference = Column(String(100))  # Batch ID / Escrow ID
+    raw_data = Column(JSONB)  # Full payload from API

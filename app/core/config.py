@@ -8,24 +8,25 @@ class Settings(BaseSettings):
     APP_PORT: int = 9202
     DEBUG: bool = True
     SECRET_KEY: str = "weorder-secret-key-change-in-production"
+    TIMEZONE: str = "Asia/Bangkok"
     
-    # Database
+    # Database - Loaded from environment variables / .env file
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "postgres"
+    POSTGRES_PASSWORD: str = ""  # Set via POSTGRES_PASSWORD env var or .env
     POSTGRES_DB: str = "weorder"
     POSTGRES_PORT: int = 5432
     
     # Paths
-    DATA_PATH: str = "D:/IISSERVER/data/weorder"
-    LOGS_PATH: str = "D:/IISSERVER/logs/weorder"
+    DATA_PATH: str = os.getenv("DATA_PATH", "./data")
+    LOGS_PATH: str = os.getenv("LOGS_PATH", "./logs")
     
     @property
     def DATABASE_URL(self) -> str:
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
     
     class Config:
-        env_file = "D:/IISSERVER/run/weorder/.env"
+        env_file = ".env"
         extra = "ignore"
 
 @lru_cache()

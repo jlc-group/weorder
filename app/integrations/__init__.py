@@ -1,4 +1,3 @@
-# Platform Integrations Package
 from .base import BasePlatformClient
 from .shopee import ShopeeClient
 from .lazada import LazadaClient

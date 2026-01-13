@@ -32,8 +32,8 @@ class LazadaClient(BasePlatformClient):
     STATUS_MAP = {
         "unpaid": "WAIT_PAY",
         "pending": "NEW",
-        "ready_to_ship": "PAID",
-        "ready_to_ship_pending": "PAID",
+        "ready_to_ship": "READY_TO_SHIP",
+        "ready_to_ship_pending": "READY_TO_SHIP",
         "shipped": "SHIPPED",
         "delivered": "DELIVERED",
         "failed": "CANCELLED",
@@ -220,9 +220,18 @@ class LazadaClient(BasePlatformClient):
     async def get_order_detail(self, order_id: str) -> Dict[str, Any]:
         """
         Get detailed order information
-        API: /order/get
+        API: /order/get + /order/items/get
         """
         data = await self._make_request("/order/get", params={"order_id": order_id})
+        
+        # Also fetch items and attach them to the order data
+        try:
+            items = await self.get_order_items(order_id)
+            if items:
+                data["order_items"] = items
+        except Exception as e:
+            logger.error(f"Error fetching items for Lazada order {order_id}: {e}")
+            
         return data
     
     async def get_order_items(self, order_id: str) -> list:
@@ -231,8 +240,33 @@ class LazadaClient(BasePlatformClient):
         API: /order/items/get
         """
         data = await self._make_request("/order/items/get", params={"order_id": order_id})
+        if isinstance(data, list):
+            return data
         return data.get("items", [])
-    
+
+    # ========== Finance ==========
+
+    async def get_transaction_details(
+        self,
+        time_from: datetime,
+        time_to: datetime,
+        trans_type: Optional[str] = None
+    ) -> list:
+        """
+        Get transaction details
+        API: /finance/transaction/detail/get
+        """
+        params = {
+            "start_time": time_from.strftime("%Y-%m-%d"),
+            "end_time": time_to.strftime("%Y-%m-%d"),
+        }
+        if trans_type:
+            params["trans_type"] = trans_type
+            
+        # Lazada Finance API often returns a list directly or inside a key
+        data = await self._make_request("/finance/transaction/detail/get", params=params)
+        return data if isinstance(data, list) else data.get("data", [])
+
     def normalize_order(self, raw_order: Dict[str, Any]) -> NormalizedOrder:
         """Convert Lazada order to normalized format"""
         address = raw_order.get("address_shipping", {})
@@ -250,6 +284,15 @@ class LazadaClient(BasePlatformClient):
                 "variation": item.get("variation"),
             })
         
+        status_raw = raw_order.get("statuses", [""])[0] if raw_order.get("statuses") else ""
+        status_norm = self.normalize_order_status(status_raw)
+        updated_at = datetime.fromisoformat(raw_order["updated_at"].replace("Z", "+00:00")) if raw_order.get("updated_at") else None
+        
+        # Fallback for shipped_at since Lazada doesn't provide it
+        shipped_at = None
+        if status_norm in ["SHIPPED", "DELIVERED", "COMPLETED"]:
+            shipped_at = updated_at
+
         return NormalizedOrder(
             platform_order_id=str(raw_order.get("order_id", "")),
             platform="lazada",
@@ -265,10 +308,8 @@ class LazadaClient(BasePlatformClient):
             shipping_postal_code=address.get("post_code", ""),
             shipping_country=address.get("country", "TH"),
             
-            order_status=raw_order.get("statuses", [""])[0] if raw_order.get("statuses") else "",
-            status_normalized=self.normalize_order_status(
-                raw_order.get("statuses", [""])[0] if raw_order.get("statuses") else ""
-            ),
+            order_status=status_raw,
+            status_normalized=status_norm,
             
             subtotal=float(raw_order.get("price", 0)),
             shipping_fee=float(raw_order.get("shipping_fee", 0)),
@@ -277,10 +318,12 @@ class LazadaClient(BasePlatformClient):
             payment_method=raw_order.get("payment_method", ""),
             
             order_created_at=datetime.fromisoformat(raw_order["created_at"].replace("Z", "+00:00")) if raw_order.get("created_at") else None,
-            order_updated_at=datetime.fromisoformat(raw_order["updated_at"].replace("Z", "+00:00")) if raw_order.get("updated_at") else None,
+            order_updated_at=updated_at,
+            shipped_at=shipped_at,
             
             items=items,
             raw_payload=raw_order,
+
         )
     
     def normalize_order_status(self, platform_status: str) -> str:

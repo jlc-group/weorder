@@ -1,4 +1,3 @@
-# Models Package - SQLAlchemy Models
 from .base import TimestampMixin, UUIDMixin
 from .master import Company, Warehouse, SalesChannel, AppUser, Role, UserRole
 from .product import Product, ProductSetBom
@@ -13,6 +12,8 @@ from .invoice import InvoiceProfile
 from .loyalty import LoyaltyLink, LoyaltyEarnTx
 from .audit import AuditLog
 from .integration import PlatformConfig, SyncJob, WebhookLog
+from .mapping import PlatformListing, PlatformListingItem
+from .sync_log import SyncLog, SyncStatus
 
 __all__ = [
     # Base
@@ -43,4 +44,9 @@ __all__ = [
     "AuditLog",
     # Integration
     "PlatformConfig", "SyncJob", "WebhookLog",
+    # Mappings
+    "PlatformListing", "PlatformListingItem",
+    # Sync
+    "SyncLog", "SyncStatus",
 ]
+

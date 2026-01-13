@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 import logging
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
+# from apscheduler.schedulers.asyncio import AsyncIOScheduler
+# from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -17,7 +17,8 @@ from app.models.integration import PlatformConfig
 logger = logging.getLogger(__name__)
 
 # Global scheduler instance
-_scheduler: Optional[AsyncIOScheduler] = None
+# Global scheduler instance
+_scheduler = None
 
 
 class OrderSyncScheduler:
@@ -26,6 +27,7 @@ class OrderSyncScheduler:
     """
     
     def __init__(self):
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
         self.scheduler = AsyncIOScheduler()
         self.is_running = False
     
@@ -36,8 +38,16 @@ class OrderSyncScheduler:
             self.is_running = True
             logger.info("Order sync scheduler started")
             
-            # Schedule initial sync jobs
-            self._schedule_platform_syncs()
+            # Schedule initial sync jobs (Run as a job to not block startup)
+            from datetime import datetime
+            self.scheduler.add_job(
+                func=self._schedule_platform_syncs,
+                trigger='date',
+                run_date=datetime.now(),
+                id='init_platform_syncs',
+                name='Initialize Platform Syncs',
+                replace_existing=True
+            )
     
     def stop(self):
         """Stop the scheduler"""
@@ -70,6 +80,7 @@ class OrderSyncScheduler:
             self.scheduler.remove_job(job_id)
         
         # Add new job with configured interval
+        from apscheduler.triggers.interval import IntervalTrigger
         self.scheduler.add_job(
             func=self._run_sync,
             trigger=IntervalTrigger(minutes=config.sync_interval_minutes),
@@ -146,7 +157,7 @@ class OrderSyncScheduler:
 
 # ========== Global Functions ==========
 
-def get_scheduler() -> OrderSyncScheduler:
+def get_scheduler() -> "OrderSyncScheduler":
     """Get or create the global scheduler instance"""
     global _scheduler
     if _scheduler is None:

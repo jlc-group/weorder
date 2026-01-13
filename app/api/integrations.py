@@ -73,10 +73,11 @@ class SyncTriggerRequest(BaseModel):
     hours_back: int = 24
 
 
+
 # ========== Platform Config Endpoints ==========
 
 @integrations_router.get("/platforms", response_model=List[PlatformConfigResponse])
-async def list_platform_configs(
+def list_platform_configs(
     platform: Optional[str] = None,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
@@ -101,7 +102,7 @@ async def list_platform_configs(
 
 
 @integrations_router.get("/platforms/{config_id}", response_model=PlatformConfigResponse)
-async def get_platform_config(
+def get_platform_config(
     config_id: str,
     db: Session = Depends(get_db),
 ):
@@ -125,7 +126,7 @@ async def get_platform_config(
 
 
 @integrations_router.post("/platforms", response_model=PlatformConfigResponse, status_code=status.HTTP_201_CREATED)
-async def create_platform_config(
+def create_platform_config(
     data: PlatformConfigCreate,
     db: Session = Depends(get_db),
 ):
@@ -169,7 +170,7 @@ async def create_platform_config(
 
 
 @integrations_router.put("/platforms/{config_id}", response_model=PlatformConfigResponse)
-async def update_platform_config(
+def update_platform_config(
     config_id: str,
     data: PlatformConfigUpdate,
     db: Session = Depends(get_db),
@@ -199,7 +200,7 @@ async def update_platform_config(
 
 
 @integrations_router.delete("/platforms/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_platform_config(
+def delete_platform_config(
     config_id: str,
     db: Session = Depends(get_db),
 ):
@@ -212,7 +213,7 @@ async def delete_platform_config(
 # ========== Sync Endpoints ==========
 
 @integrations_router.post("/platforms/{config_id}/sync")
-async def trigger_sync(
+def trigger_sync(
     config_id: str,
     data: SyncTriggerRequest,
     background_tasks: BackgroundTasks,
@@ -241,7 +242,7 @@ async def trigger_sync(
 
 
 @integrations_router.post("/sync-all")
-async def trigger_sync_all(
+def trigger_sync_all(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
@@ -259,7 +260,7 @@ async def trigger_sync_all(
 
 
 @integrations_router.get("/platforms/{config_id}/sync-history", response_model=List[SyncJobResponse])
-async def get_sync_history(
+def get_sync_history(
     config_id: str,
     limit: int = 20,
     db: Session = Depends(get_db),
@@ -296,7 +297,10 @@ async def get_auth_url(
     db: Session = Depends(get_db),
 ):
     """Get OAuth authorization URL for a platform"""
-    config = integration_service.get_platform_config(db, config_id)
+    # Use run_in_threadpool for blocking DB call to get config
+    from starlette.concurrency import run_in_threadpool
+    
+    config = await run_in_threadpool(integration_service.get_platform_config, db, config_id)
     if not config:
         raise HTTPException(status_code=404, detail="Platform config not found")
     
@@ -313,7 +317,9 @@ async def exchange_token(
     db: Session = Depends(get_db),
 ):
     """Exchange authorization code for access token"""
-    config = integration_service.get_platform_config(db, config_id)
+    from starlette.concurrency import run_in_threadpool
+
+    config = await run_in_threadpool(integration_service.get_platform_config, db, config_id)
     if not config:
         raise HTTPException(status_code=404, detail="Platform config not found")
     
@@ -326,7 +332,8 @@ async def exchange_token(
         from datetime import timedelta
         expires_at = datetime.utcnow() + timedelta(seconds=result.get("expires_in", 3600))
         
-        integration_service.update_tokens(
+        await run_in_threadpool(
+            integration_service.update_tokens,
             db=db,
             config_id=config_id,
             access_token=result["access_token"],

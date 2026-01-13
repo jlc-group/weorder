@@ -5,7 +5,7 @@ API Documentation: https://open.shopee.com/documents
 import hashlib
 import hmac
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 import httpx
 import logging
@@ -32,7 +32,7 @@ class ShopeeClient(BasePlatformClient):
     STATUS_MAP = {
         "UNPAID": "WAIT_PAY",
         "READY_TO_SHIP": "PAID",
-        "PROCESSED": "PACKING",
+        "PROCESSED": "READY_TO_SHIP",
         "SHIPPED": "SHIPPED",
         "COMPLETED": "DELIVERED",
         "IN_CANCEL": "CANCELLED",
@@ -56,12 +56,13 @@ class ShopeeClient(BasePlatformClient):
     def _generate_signature(self, path: str, timestamp: int) -> str:
         """
         Generate Shopee API signature
-        signature = SHA256(partner_id + path + timestamp + access_token + shop_id + partner_key)
+        For auth endpoints (no token): base_string = partner_id + path + timestamp
+        For shop endpoints: base_string = partner_id + path + timestamp + access_token + shop_id
+        signature = HMAC-SHA256(partner_key, base_string)
         """
         base_string = f"{self.partner_id}{path}{timestamp}"
         if self.access_token:
             base_string += f"{self.access_token}{self.shop_id}"
-        base_string += self.app_secret
         
         return hmac.new(
             self.app_secret.encode(),
@@ -139,7 +140,14 @@ class ShopeeClient(BasePlatformClient):
         """Refresh access token"""
         path = "/api/v2/auth/access_token/get"
         timestamp = int(time.time())
-        sign = self._generate_signature(path, timestamp)
+        
+        # Auth endpoints use: partner_id + path + timestamp (no access_token/shop_id)
+        base_string = f"{self.partner_id}{path}{timestamp}"
+        sign = hmac.new(
+            self.app_secret.encode(),
+            base_string.encode(),
+            hashlib.sha256
+        ).hexdigest()
         
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -256,6 +264,73 @@ class ShopeeClient(BasePlatformClient):
             orders = data.get("response", {}).get("order_list", [])
             return orders[0] if orders else {}
     
+    async def get_order_details_batch(self, order_ids: List[str]) -> List[Dict[str, Any]]:
+        """
+        Get details for multiple orders
+        """
+        await self.ensure_valid_token()
+        path = "/api/v2/order/get_order_detail"
+        
+        # Shopee allows max 50 orders per call
+        chunk_size = 50
+        all_orders = []
+        
+        for i in range(0, len(order_ids), chunk_size):
+            chunk = order_ids[i:i+chunk_size]
+            params = self._build_common_params(path)
+            params["order_sn_list"] = ",".join(chunk)
+            params["response_optional_fields"] = (
+                "buyer_user_id,buyer_username,estimated_shipping_fee,"
+                "recipient_address,actual_shipping_fee,goods_to_declare,"
+                "note,note_update_time,item_list,pay_time,dropshipper,"
+                "dropshipper_phone,split_up,buyer_cancel_reason,cancel_by,"
+                "cancel_reason,actual_shipping_fee_confirmed,buyer_cpf_id,"
+                "fulfillment_flag,pickup_done_time,package_list,shipping_carrier,"
+                "payment_method,total_amount,buyer_username,invoice_data,"
+                "checkout_shipping_carrier,reverse_shipping_fee,order_chargeable_weight_gram"
+            )
+            
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(f"{self.BASE_URL}{path}", params=params)
+                    data = response.json()
+                    if data.get("response"):
+                        all_orders.extend(data["response"].get("order_list", []))
+            except Exception as e:
+                logger.error(f"Error fetching batch details: {e}")
+                
+        return all_orders
+        """
+        Get buyer invoice information for an order
+        API: /api/v2/order/get_buyer_invoice_info
+        Returns: {info: {name, address, tax_code, phone, ...}}
+        """
+        await self.ensure_valid_token()
+        
+        path = "/api/v2/order/get_buyer_invoice_info"
+        params = self._build_common_params(path)
+        params["order_sn_list"] = order_sn
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{self.BASE_URL}{path}", params=params)
+                self._log_api_call("GET", path, response.status_code)
+                data = response.json()
+                
+                if data.get("error"):
+                    # Log but returns None to allow continuation
+                    logger.warning(f"Shopee get_buyer_invoice_info error for {order_sn}: {data.get('message')} ({data.get('error')})")
+                    return None
+                
+                # The API returns a list of invoice info
+                invoice_list = data.get("response", {}).get("invoice_list", [])
+                if invoice_list:
+                    return {"info": invoice_list[0]} 
+                return None
+        except Exception as e:
+            logger.error(f"Error fetching buyer invoice info for {order_sn}: {e}")
+            return None
+    
     def normalize_order(self, raw_order: Dict[str, Any]) -> NormalizedOrder:
         """Convert Shopee order to normalized format"""
         recipient = raw_order.get("recipient_address", {})
@@ -274,6 +349,11 @@ class ShopeeClient(BasePlatformClient):
                 "image_url": item.get("image_info", {}).get("image_url"),
             })
         
+        # Logic for shipped_at
+        shipped_at = None
+        if raw_order.get("pickup_done_time"):
+            shipped_at = datetime.fromtimestamp(raw_order["pickup_done_time"], timezone.utc)
+
         return NormalizedOrder(
             platform_order_id=raw_order.get("order_sn", ""),
             platform="shopee",
@@ -298,14 +378,15 @@ class ShopeeClient(BasePlatformClient):
             total_amount=float(raw_order.get("total_amount", 0)),
             
             payment_method=raw_order.get("payment_method", ""),
-            paid_at=datetime.fromtimestamp(raw_order["pay_time"]) if raw_order.get("pay_time") else None,
+            paid_at=datetime.fromtimestamp(raw_order["pay_time"], timezone.utc) if raw_order.get("pay_time") else None,
             
-            shipping_method=raw_order.get("shipping_carrier", ""),
+            shipping_method=(raw_order.get("shipping_carrier") or "")[:50],
             tracking_number=raw_order.get("tracking_no"),
-            courier=raw_order.get("shipping_carrier"),
+            courier=(raw_order.get("shipping_carrier") or "")[:50],
             
-            order_created_at=datetime.fromtimestamp(raw_order["create_time"]) if raw_order.get("create_time") else None,
-            order_updated_at=datetime.fromtimestamp(raw_order["update_time"]) if raw_order.get("update_time") else None,
+            order_created_at=datetime.fromtimestamp(raw_order["create_time"], timezone.utc) if raw_order.get("create_time") else None,
+            order_updated_at=datetime.fromtimestamp(raw_order["update_time"], timezone.utc) if raw_order.get("update_time") else None,
+            shipped_at=shipped_at,
             
             items=items,
             raw_payload=raw_order,
@@ -345,3 +426,47 @@ class ShopeeClient(BasePlatformClient):
             "timestamp": payload.get("timestamp"),
             "data": payload.get("data", {}),
         }
+
+    async def get_escrow_detail(self, order_sn: str) -> Optional[Dict]:
+        """
+        Get escrow detail for an order (Finance Data)
+        """
+        await self.ensure_valid_token()
+        path = "/api/v2/payment/get_escrow_detail"
+        params = self._build_common_params(path)
+        params["order_sn"] = order_sn
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{self.BASE_URL}{path}", params=params)
+                self._log_api_call("GET", path, response.status_code)
+                data = response.json()
+                return data.get("response")
+        except Exception as e:
+            logger.error(f"Error fetching escrow detail for {order_sn}: {e}")
+            return None
+
+    async def get_escrow_list(self, start_time: datetime, end_time: datetime, page_size: int = 50, page_no: int = 1) -> Optional[Dict]:
+        """
+        Get escrow list by date range
+        """
+        await self.ensure_valid_token()
+        path = "/api/v2/payment/get_escrow_list"
+        
+        params = self._build_common_params(path)
+        params.update({
+            "release_time_from": int(start_time.timestamp()),
+            "release_time_to": int(end_time.timestamp()),
+            "page_size": page_size,
+            "page_no": page_no
+        })
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{self.BASE_URL}{path}", params=params)
+                self._log_api_call("GET", path, response.status_code)
+                data = response.json()
+                return data.get("response", {})
+        except Exception as e:
+             logger.error(f"Error fetching escrow list: {e}")
+             return None

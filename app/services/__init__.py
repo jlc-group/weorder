@@ -1,4 +1,3 @@
-# Services Package
 from .order_service import OrderService
 from .product_service import ProductService
 from .stock_service import StockService

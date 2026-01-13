@@ -107,3 +107,41 @@ class ProductService:
                 })
         
         return components
+
+    @staticmethod
+    def update_set_components(db: Session, product_id: UUID, components: List[dict]) -> bool:
+        """
+        Update components for a SET product
+        components: list of dict {'product_id': UUID, 'quantity': int}
+        """
+        # 1. Verify product exists and is SET
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product:
+            return False
+            
+        # Ensure it is a SET
+        if product.product_type != "SET":
+            product.product_type = "SET"
+            db.add(product)
+            
+        # 2. Clear existing BOM
+        db.query(ProductSetBom).filter(ProductSetBom.set_product_id == product_id).delete()
+        
+        # 3. Add new BOM
+        for comp in components:
+            comp_id = comp.get('product_id')
+            qty = comp.get('quantity', 1)
+            
+            if not comp_id:
+                continue
+                
+            # Check component existence? (Assume valid ID)
+            bom = ProductSetBom(
+                set_product_id=product_id,
+                component_product_id=comp_id,
+                quantity=qty
+            )
+            db.add(bom)
+            
+        db.commit()
+        return True

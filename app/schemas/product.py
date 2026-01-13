@@ -37,3 +37,13 @@ class ProductResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class ProductSetComponent(BaseModel):
+    product_id: UUID
+    quantity: int
+    sku: Optional[str] = None
+    name: Optional[str] = None
+
+class ProductSetBOMUpdate(BaseModel):
+    components: list[ProductSetComponent]
+

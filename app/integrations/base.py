@@ -48,6 +48,7 @@ class NormalizedOrder:
     payment_method: str = ""
     payment_status: str = ""
     paid_at: Optional[datetime] = None
+    shipped_at: Optional[datetime] = None
     
     # Shipping
     shipping_method: str = ""

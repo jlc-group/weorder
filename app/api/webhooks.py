@@ -3,6 +3,7 @@ Webhook API Endpoints - Receive notifications from marketplace platforms
 """
 from fastapi import APIRouter, Request, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 import logging
 
 from app.core.database import get_db
@@ -31,13 +32,13 @@ async def process_order_webhook(
         )
         
         result = "CREATED" if created else ("UPDATED" if updated else "SKIPPED")
-        integration_service.mark_webhook_processed(db, webhook_log_id, result)
+        await run_in_threadpool(integration_service.mark_webhook_processed, db, webhook_log_id, result)
         
         logger.info(f"Webhook processed: {platform}/{order_id} -> {result}")
         
     except Exception as e:
         logger.error(f"Webhook processing failed: {platform}/{order_id} - {e}")
-        integration_service.mark_webhook_processed(db, webhook_log_id, "FAILED", str(e))
+        await run_in_threadpool(integration_service.mark_webhook_processed, db, webhook_log_id, "FAILED", str(e))
 
 
 # ========== Shopee Webhook ==========
@@ -60,7 +61,8 @@ async def shopee_webhook(
         signature = request.headers.get("Authorization", "")
         
         # Log webhook
-        webhook_log = integration_service.log_webhook(
+        webhook_log = await run_in_threadpool(
+            integration_service.log_webhook,
             db=db,
             platform="shopee",
             event_type=str(payload.get("code")),
@@ -75,7 +77,7 @@ async def shopee_webhook(
         event_code = payload.get("code")
         
         # Get platform config for this shop
-        config = integration_service.get_platform_config_by_shop(db, "shopee", shop_id)
+        config = await run_in_threadpool(integration_service.get_platform_config_by_shop, db, "shopee", shop_id)
         
         if config:
             # Verify signature
@@ -122,7 +124,8 @@ async def lazada_webhook(
         signature = request.headers.get("X-Lazada-Sign", "")
         
         # Log webhook
-        webhook_log = integration_service.log_webhook(
+        webhook_log = await run_in_threadpool(
+            integration_service.log_webhook,
             db=db,
             platform="lazada",
             event_type=payload.get("message_type", ""),
@@ -173,7 +176,8 @@ async def tiktok_webhook(
         timestamp = request.headers.get("X-TT-Timestamp", "")
         
         # Log webhook
-        webhook_log = integration_service.log_webhook(
+        webhook_log = await run_in_threadpool(
+            integration_service.log_webhook,
             db=db,
             platform="tiktok",
             event_type=payload.get("type", ""),
@@ -189,7 +193,7 @@ async def tiktok_webhook(
         shop_id = payload.get("shop_id", "")
         
         # Get platform config for verification
-        config = integration_service.get_platform_config_by_shop(db, "tiktok", shop_id)
+        config = await run_in_threadpool(integration_service.get_platform_config_by_shop, db, "tiktok", shop_id)
         
         if config:
             # Verify signature
@@ -200,8 +204,8 @@ async def tiktok_webhook(
             )
             
             if not client.verify_webhook_signature(body, signature, timestamp):
-                logger.warning(f"TikTok webhook signature verification failed")
-                # Continue processing anyway for now
+                logger.error(f"TikTok webhook signature verification failed for shop {shop_id}")
+                return {"code": 401, "message": "Invalid signature"}  # Strict Rejection
         
         # Handle order events
         if event_type in ["ORDER_STATUS_CHANGE", "ORDER_CREATE", "1", "2"]:
@@ -222,7 +226,7 @@ async def tiktok_webhook(
 # ========== Webhook Status ==========
 
 @webhook_router.get("/status")
-async def webhook_status():
+def webhook_status():
     """Check webhook endpoints status"""
     return {
         "status": "active",

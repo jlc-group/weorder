@@ -44,6 +44,16 @@ class OrderHeader(Base, UUIDMixin, TimestampMixin):
     
     # Dates
     order_datetime = Column(DateTime(timezone=True))
+    shipped_at = Column(DateTime(timezone=True))
+    rts_time = Column(DateTime(timezone=True))  # Ready To Ship time
+    paid_time = Column(DateTime(timezone=True))
+    delivery_time = Column(DateTime(timezone=True))
+    collection_time = Column(DateTime(timezone=True))
+    
+    # Shipping Fee Details
+    original_shipping_fee = Column(Numeric(12, 2), default=0)
+    shipping_fee_platform_discount = Column(Numeric(12, 2), default=0)
+    is_cod = Column(Boolean, default=False)
     
     # Currency
     currency_code = Column(String(3), default="THB")
@@ -111,6 +121,11 @@ class OrderItem(Base, UUIDMixin):
     
     # Line total (after discount)
     line_total = Column(Numeric(12, 2), default=0)
+    
+    # Original price and discount breakdown
+    original_price = Column(Numeric(12, 2), default=0)
+    platform_discount = Column(Numeric(12, 2), default=0)
+    seller_discount = Column(Numeric(12, 2), default=0)
     
     # Line type
     line_type = Column(String(20), default="NORMAL")  # NORMAL, FREE_GIFT, BUNDLE_COMPONENT, FREE_PROMO
