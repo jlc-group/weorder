@@ -171,9 +171,9 @@ async def tiktok_webhook(
         body = await request.body()
         payload = await request.json()
         
-        # Get signature from headers
-        signature = request.headers.get("X-TT-Signature", "")
-        timestamp = request.headers.get("X-TT-Timestamp", "")
+        # Get signature from headers (TikTok uses 'authorization' header)
+        signature = request.headers.get("authorization", "") or request.headers.get("X-TT-Signature", "")
+        timestamp = request.headers.get("X-TT-Timestamp", "") or request.headers.get("timestamp", "")
         
         # Log webhook
         webhook_log = await run_in_threadpool(
