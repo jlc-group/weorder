@@ -100,94 +100,108 @@ class OrderSyncService:
             cursor = None
             has_more = True
             
-            # Determine status filter based on platform (for faster sync)
-            # Set to None to fetch ALL orders within time range
-            # The time range (3 days) already limits the data enough
-            status_filter = None  # Let time range handle it, fetch all statuses
+            # Determine status filters based on platform
+            # For TikTok: fetch multiple statuses that need packing
+            # TikTok API supports one status per request, so we loop
+            status_filters = []
+            if config.platform == 'tiktok':
+                # Statuses that need attention/packing
+                status_filters = ['AWAITING_SHIPMENT', 'UNPAID', 'ON_HOLD', 'AWAITING_COLLECTION']
+            elif config.platform == 'shopee':
+                status_filters = ['READY_TO_SHIP', 'PROCESSED']
+            elif config.platform == 'lazada':
+                status_filters = ['pending', 'ready_to_ship']
+            else:
+                status_filters = [None]  # No filter
             
-            while has_more:
-                # Async IO
-                result = await client.get_orders(
-                    time_from=time_from,
-                    time_to=time_to,
-                    status=status_filter,  # Add status filter
-                    cursor=cursor,
-                    page_size=50,
-                )
+            # Loop through each status filter
+            for status_filter in status_filters:
+                cursor = None
+                has_more = True
                 
-                orders = result.get("orders", [])
-                cursor = result.get("next_cursor")
-                has_more = result.get("has_more", False) and cursor
-                
-                # Process orders in batches (Chunk size 50)
-                # This drastically reduces API calls for platforms requiring detail fetch (e.g. Shopee)
-                chunk_size = 50
-                for i in range(0, len(orders), chunk_size):
-                    batch = orders[i:i+chunk_size]
-                    batch_ids = []
+                while has_more:
+                    # Async IO
+                    result = await client.get_orders(
+                        time_from=time_from,
+                        time_to=time_to,
+                        status=status_filter,
+                        cursor=cursor,
+                        page_size=50,
+                    )
                     
-                    # 1. Collect IDs that need detail fetching
-                    for raw in batch:
-                        order_id = self._extract_order_id(config.platform, raw)
-                        if order_id:
-                            batch_ids.append(order_id)
+                    orders = result.get("orders", [])
+                    cursor = result.get("next_cursor")
+                    has_more = result.get("has_more", False) and cursor
                     
-                    # 2. Batch Fetch Details (if supported)
-                    detailed_batch = []
-                    if hasattr(client, 'get_order_details_batch'):
-                        try:
-                            logger.info(f"Using Batch Fetch for {len(batch_ids)} orders")
-                            # Async IO - Batch Call
-                            detailed_batch = await client.get_order_details_batch(batch_ids)
-                        except Exception as e:
-                            logger.error(f"Batch fetch error: {e}, falling back to single fetch")
-                            detailed_batch = []
-                    else:
-                        logger.info("Client does not support get_order_details_batch")
-                    
-                    # 3. Fallback / Merge Logic
-                    # If batch fetch returned results, use them. Otherwise use original raw (and fetch single if needed)
-                    # For Shopee: batch fetch returns full details.
-                    # For others: might overwrite completely.
-                    
-                    final_batch = detailed_batch if detailed_batch else batch
-                    
-                    # If batch fetch failed or returned fewer items (unlikely but possible), 
-                    # we should ideally fallback to single fetch, but for now let's process what we have.
-                    # Mapping back is tricky if order isn't preserved, but platforms usually return list.
-                    
-                    # 4. Process Batch
-                    for raw_order in final_batch:
-                        stats["fetched"] += 1
+                    # Process orders in batches (Chunk size 50)
+                    # This drastically reduces API calls for platforms requiring detail fetch (e.g. Shopee)
+                    chunk_size = 50
+                    for i in range(0, len(orders), chunk_size):
+                        batch = orders[i:i+chunk_size]
+                        batch_ids = []
                         
-                        try:
-                            # If we didn't get detail from batch (and batch logic wasn't used/failed),
-                            # try single fetch for platforms that need it (Fallback)
-                            if not detailed_batch and hasattr(client, 'get_order_detail'):
-                                order_id = self._extract_order_id(config.platform, raw_order)
-                                if order_id:
-                                    detail = await client.get_order_detail(order_id)
-                                    if detail:
-                                        raw_order = detail
+                        # 1. Collect IDs that need detail fetching
+                        for raw in batch:
+                            order_id = self._extract_order_id(config.platform, raw)
+                            if order_id:
+                                batch_ids.append(order_id)
+                        
+                        # 2. Batch Fetch Details (if supported)
+                        detailed_batch = []
+                        if hasattr(client, 'get_order_details_batch'):
+                            try:
+                                logger.info(f"Using Batch Fetch for {len(batch_ids)} orders")
+                                # Async IO - Batch Call
+                                detailed_batch = await client.get_order_details_batch(batch_ids)
+                            except Exception as e:
+                                logger.error(f"Batch fetch error: {e}, falling back to single fetch")
+                                detailed_batch = []
+                        else:
+                            logger.info("Client does not support get_order_details_batch")
+                        
+                        # 3. Fallback / Merge Logic
+                        # If batch fetch returned results, use them. Otherwise use original raw (and fetch single if needed)
+                        # For Shopee: batch fetch returns full details.
+                        # For others: might overwrite completely.
+                        
+                        final_batch = detailed_batch if detailed_batch else batch
+                        
+                        # If batch fetch failed or returned fewer items (unlikely but possible), 
+                        # we should ideally fallback to single fetch, but for now let's process what we have.
+                        # Mapping back is tricky if order isn't preserved, but platforms usually return list.
+                        
+                        # 4. Process Batch
+                        for raw_order in final_batch:
+                            stats["fetched"] += 1
+                            
+                            try:
+                                # If we didn't get detail from batch (and batch logic wasn't used/failed),
+                                # try single fetch for platforms that need it (Fallback)
+                                if not detailed_batch and hasattr(client, 'get_order_detail'):
+                                    order_id = self._extract_order_id(config.platform, raw_order)
+                                    if order_id:
+                                        detail = await client.get_order_detail(order_id)
+                                        if detail:
+                                            raw_order = detail
 
-                            # Normalize order (Fast, CPU bound but okay)
-                            normalized = client.normalize_order(raw_order)
-                            
-                            # Process order (Blocking DB)
-                            created, updated = await run_in_threadpool(
-                                self._process_order, normalized, company_id
-                            )
-                            
-                            if created:
-                                stats["created"] += 1
-                            elif updated:
-                                stats["updated"] += 1
-                            else:
-                                stats["skipped"] += 1
-                            
-                        except Exception as e:
-                            logger.error(f"Error processing order: {e}")
-                            stats["errors"] += 1
+                                # Normalize order (Fast, CPU bound but okay)
+                                normalized = client.normalize_order(raw_order)
+                                
+                                # Process order (Blocking DB)
+                                created, updated = await run_in_threadpool(
+                                    self._process_order, normalized, company_id
+                                )
+                                
+                                if created:
+                                    stats["created"] += 1
+                                elif updated:
+                                    stats["updated"] += 1
+                                else:
+                                    stats["skipped"] += 1
+                                
+                            except Exception as e:
+                                logger.error(f"Error processing order: {e}")
+                                stats["errors"] += 1
             
             # Update last sync time (Blocking)
             config.last_sync_at = datetime.utcnow()
