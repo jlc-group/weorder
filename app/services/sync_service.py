@@ -90,7 +90,7 @@ class OrderSyncService:
             # Get platform client
             client = integration_service.get_client_for_config(config)
             
-            # Default time range: last 7 days (covers older orders still pending)
+            # Default time range: last 7 days (balance between coverage and performance)
             if not time_from:
                 time_from = datetime.utcnow() - timedelta(days=7)
             if not time_to:
@@ -100,13 +100,22 @@ class OrderSyncService:
             cursor = None
             has_more = True
             
+            # Adjust time range for platform limitations
+            platform_time_from = time_from
+            if config.platform == 'shopee':
+                # Shopee API limits to 15 days
+                max_days_back = datetime.utcnow() - timedelta(days=14)
+                if platform_time_from < max_days_back:
+                    platform_time_from = max_days_back
+            
             # Determine status filters based on platform
-            # For TikTok: fetch multiple statuses that need packing
-            # TikTok API supports one status per request, so we loop
+            # TikTok: NO filter - fetch all orders to get complete count
+            # Other platforms: filter for efficiency
             status_filters = []
             if config.platform == 'tiktok':
-                # Statuses that need attention/packing
-                status_filters = ['AWAITING_SHIPMENT', 'UNPAID', 'ON_HOLD', 'AWAITING_COLLECTION']
+                # Don't filter - let the API return all orders within time range
+                # Then we filter/count in DB for display
+                status_filters = [None]
             elif config.platform == 'shopee':
                 status_filters = ['READY_TO_SHIP', 'PROCESSED']
             elif config.platform == 'lazada':
@@ -122,7 +131,7 @@ class OrderSyncService:
                 while has_more:
                     # Async IO
                     result = await client.get_orders(
-                        time_from=time_from,
+                        time_from=platform_time_from,
                         time_to=time_to,
                         status=status_filter,
                         cursor=cursor,
