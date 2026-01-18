@@ -100,11 +100,22 @@ class OrderSyncService:
             cursor = None
             has_more = True
             
+            # Determine status filter based on platform (for faster sync)
+            # Only fetch orders that need processing, not completed ones
+            status_filter = None
+            if config.platform == 'tiktok':
+                status_filter = 'AWAITING_SHIPMENT'  # Only pending orders
+            elif config.platform == 'shopee':
+                status_filter = 'READY_TO_SHIP'
+            elif config.platform == 'lazada':
+                status_filter = 'pending'  # Lazada uses 'pending', 'ready_to_ship'
+            
             while has_more:
                 # Async IO
                 result = await client.get_orders(
                     time_from=time_from,
                     time_to=time_to,
+                    status=status_filter,  # Add status filter
                     cursor=cursor,
                     page_size=50,
                 )
