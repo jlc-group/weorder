@@ -432,32 +432,56 @@ class TikTokClient(BasePlatformClient):
         """Convert TikTok order to normalized format"""
         recipient = raw_order.get("recipient_address", {})
         
-        # Parse items
-        items = []
+        # Parse items and consolidate duplicates by SKU
+        items_by_sku: Dict[str, Any] = {}
         for item in raw_order.get("line_items", []):
-            items.append({
-                "platform_item_id": str(item.get("id")),
-                "sku": item.get("seller_sku", ""),
-                "product_name": item.get("product_name", ""),
-                "quantity": item.get("quantity", 1),
-                "unit_price": float(item.get("sale_price", 0)),
-                "total_price": float(item.get("sale_price", 0)) * item.get("quantity", 1),
-                "variation": item.get("sku_name"),
-                "image_url": item.get("sku_image"),
-            })
+            sku = item.get("seller_sku", "")
+            quantity = item.get("quantity", 1)
+            sale_price = float(item.get("sale_price", 0))
+            
+            if sku in items_by_sku:
+                # Merge with existing item
+                items_by_sku[sku]["quantity"] += quantity
+                items_by_sku[sku]["total_price"] += sale_price * quantity
+            else:
+                items_by_sku[sku] = {
+                    "platform_item_id": str(item.get("id")),
+                    "sku": sku,
+                    "product_name": item.get("product_name", ""),
+                    "quantity": quantity,
+                    "unit_price": sale_price,
+                    "total_price": sale_price * quantity,
+                    "variation": item.get("sku_name"),
+                    "image_url": item.get("sku_image"),
+                }
+        
+        items = list(items_by_sku.values())
         
         # Calculate totals
         payment = raw_order.get("payment", {})
         total_amount = float(payment.get("total_amount", 0))
         shipping_fee = float(payment.get("shipping_fee", 0))
         
+        # Check if this is an affiliate order
+        # Note: TikTok order detail API doesn't provide direct affiliate/live info
+        # This will be updated later from finance transaction data
+        # For now, we set it based on available indicators
+        is_affiliate = False
+        is_live = False
+
+        # Check if order has live_tag or other indicators
+        # This is a placeholder - actual detection requires finance data
+        live_tag = raw_order.get("live_tag")
+        if live_tag:
+            is_live = True
+
         return NormalizedOrder(
             platform_order_id=raw_order.get("id", ""),
             platform="tiktok",
-            
+
             customer_name=recipient.get("name", ""),
             customer_phone=recipient.get("phone_number", ""),
-            
+
             shipping_name=recipient.get("name", ""),
             shipping_phone=recipient.get("phone_number", ""),
             shipping_address=recipient.get("full_address", ""),
@@ -466,32 +490,76 @@ class TikTokClient(BasePlatformClient):
             shipping_province=recipient.get("state", ""),
             shipping_postal_code=recipient.get("postal_code", ""),
             shipping_country=recipient.get("region_code", "TH"),
-            
+
             order_status=raw_order.get("status", ""),
-            status_normalized=self.normalize_order_status(raw_order.get("status", "")),
-            
+            status_normalized=self._normalize_status_with_reason(raw_order),
+
             subtotal=total_amount - shipping_fee,
             shipping_fee=shipping_fee,
             total_amount=total_amount,
-            
+
             payment_method=raw_order.get("payment_method_name", "UNKNOWN"),
             payment_status="PAID" if self.normalize_order_status(raw_order.get("status", "")) in ["PAID", "PACKING", "SHIPPED", "DELIVERED", "COMPLETED"] else "PENDING",
-            
+
             tracking_number=raw_order.get("packages", [{}])[0].get("tracking_number") if raw_order.get("packages") else None,
             courier=raw_order.get("packages", [{}])[0].get("shipping_provider_name") if raw_order.get("packages") else None,
-            
+
             order_created_at=datetime.fromtimestamp(raw_order["create_time"], timezone.utc) if raw_order.get("create_time") else None,
             order_updated_at=datetime.fromtimestamp(raw_order["update_time"], timezone.utc) if raw_order.get("update_time") else None,
-            
+
             shipped_at=(
                 datetime.fromtimestamp(raw_order["collection_time"], timezone.utc) if raw_order.get("collection_time")
                 else None
             ),
-            
+
+            is_affiliate_order=is_affiliate,
+            is_live_order=is_live,
+
             items=items,
             raw_payload=raw_order,
         )
     
+
+    def _normalize_status_with_reason(self, raw_order: Dict[str, Any]) -> str:
+        """Normalize status with checks for cancellation reason"""
+        status = raw_order.get("status", "")
+        normalized = self.STATUS_MAP.get(status, "NEW")
+        
+        # Check for Delivery Failed / Customer Rejected
+        # TikTok status might be CANCELLED with reason
+        if normalized in ["CANCELLED", "RETURNED"]:
+            reason = (raw_order.get("cancel_reason") or "").lower()
+            
+            # Keywords indicating delivery failure / rejection
+            fail_keywords = [
+                "delivery failed", 
+                "package returned",
+                "logistics_process_failed",
+                "buyer_refused",
+                "recipient rejected",
+                "customer rejected",
+                "undeliverable",
+                "delivery unsuccessful",
+                "lost",
+                "attempted failed"
+            ]
+            
+            if any(k in reason for k in fail_keywords):
+                return "DELIVERY_FAILED"
+
+            # Thai keywords
+            thai_keywords = [
+                "ส่งไม่สำเร็จ",
+                "ปฏิเสธ",
+                "ติดต่อไม่ได้",
+                "หาไม่เจอ",
+                "ตีกลับ"
+            ]
+            if any(k in reason for k in thai_keywords):
+                return "DELIVERY_FAILED"
+                
+        return normalized
+
     def normalize_order_status(self, platform_status: str) -> str:
         """Map TikTok status to normalized status"""
         return self.STATUS_MAP.get(platform_status, "NEW")
@@ -589,6 +657,38 @@ class TikTokClient(BasePlatformClient):
         resp = await self._make_request(path, method="GET", params=params)
         print(f"DEBUG: TikTok Payments Response: {json.dumps(resp)}")
         return resp
+
+    async def get_order_transactions(self, order_id: str) -> Dict:
+        """
+        Get SKU-level transaction details for a specific order.
+        Uses API version 202501 for detailed fee breakdown including:
+        - ค่าธรรมเนียมคำสั่งซื้อ (transaction_fee_amount)
+        - ค่าบริการแบรนด์ดัง/แฟลชเซล (flash_sales_service_fee_amount)
+        - ค่าธรรมเนียมสนับสนุนการเติบโต (dynamic_commission_amount)
+        - ค่าธรรมเนียมโครงสร้างพื้นฐาน (vn_fix_infrastructure_fee)
+        
+        Docs: /finance/202501/orders/{order_id}/statement_transactions
+        """
+        # Use API version 202501 for more detailed fee breakdown
+        path = f"/finance/202501/orders/{order_id}/statement_transactions"
+        
+        params = {
+            "page_size": 50,
+        }
+        
+        try:
+            resp = await self._make_request(path, method="GET", params=params)
+            logger.info(f"TikTok Order Statement Transactions (v202501) for {order_id}")
+            return resp
+        except Exception as e:
+            logger.error(f"Error fetching order statement transactions for {order_id}: {e}")
+            # Fallback to old API version if 202501 fails
+            try:
+                path_old = f"/finance/{self.API_VERSION}/orders/{order_id}/statement_transactions"
+                resp = await self._make_request(path_old, method="GET", params=params)
+                return resp
+            except:
+                return {}
 
     async def get_reverse_orders(self, update_time_from: datetime, update_time_to: datetime, cursor: str = None, page_size: int = 50) -> Dict:
         """

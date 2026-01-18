@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
+import { useAuth } from '../contexts/AuthContext';
 
 interface LayoutProps {
     children: React.ReactNode;
@@ -12,6 +13,8 @@ interface LayoutProps {
 const Layout: React.FC<LayoutProps> = ({ children, title = "WeOrder", breadcrumb, actions }) => {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [currentTime, setCurrentTime] = useState(new Date());
+    const { user, logout } = useAuth();
+    const navigate = useNavigate();
 
     // Close sidebar on route change
     const location = useLocation();
@@ -33,6 +36,11 @@ const Layout: React.FC<LayoutProps> = ({ children, title = "WeOrder", breadcrumb
             hour: '2-digit',
             minute: '2-digit'
         });
+    };
+
+    const handleLogout = () => {
+        logout();
+        navigate('/login');
     };
 
     return (
@@ -64,6 +72,33 @@ const Layout: React.FC<LayoutProps> = ({ children, title = "WeOrder", breadcrumb
                             <i className="bi bi-clock me-1"></i>
                             {formatDate(currentTime)}
                         </span>
+                        {user && (
+                            <div className="dropdown">
+                                <button
+                                    className="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                    type="button"
+                                    data-bs-toggle="dropdown"
+                                    aria-expanded="false"
+                                >
+                                    <i className="bi bi-person-circle me-1"></i>
+                                    {user.username}
+                                </button>
+                                <ul className="dropdown-menu dropdown-menu-end">
+                                    <li>
+                                        <span className="dropdown-item-text small text-muted">
+                                            {user.full_name || user.username}
+                                        </span>
+                                    </li>
+                                    <li><hr className="dropdown-divider" /></li>
+                                    <li>
+                                        <button className="dropdown-item" onClick={handleLogout}>
+                                            <i className="bi bi-box-arrow-right me-2"></i>
+                                            ออกจากระบบ
+                                        </button>
+                                    </li>
+                                </ul>
+                            </div>
+                        )}
                     </div>
                 </nav>
 
@@ -81,3 +116,4 @@ const Layout: React.FC<LayoutProps> = ({ children, title = "WeOrder", breadcrumb
 };
 
 export default Layout;
+

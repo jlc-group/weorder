@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api/client';
 import Layout from '../components/Layout';
@@ -33,13 +33,13 @@ const Orders: React.FC = () => {
     const [channel, setChannel] = useState('all');
     const [status, setStatus] = useState('all');
     const [search, setSearch] = useState('');
+    const [excludeCancelled, setExcludeCancelled] = useState(true);
     const [startDate, setStartDate] = useState(() => {
-        // Default to today
+        // Default to today (was 7 days ago - too slow with large DB)
         const today = new Date();
         return today.toISOString().split('T')[0];
     });
     const [endDate, setEndDate] = useState(() => {
-        // Default to today
         const today = new Date();
         return today.toISOString().split('T')[0];
     });
@@ -50,7 +50,7 @@ const Orders: React.FC = () => {
     // Bulk selection
     const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
 
-    const fetchOrders = async () => {
+    const fetchOrders = useCallback(async () => {
         setLoading(true);
         try {
             const params = new URLSearchParams({
@@ -62,6 +62,7 @@ const Orders: React.FC = () => {
             if (search) params.set('search', search);
             if (startDate) params.set('start_date', startDate);
             if (endDate) params.set('end_date', endDate);
+            if (excludeCancelled) params.set('exclude_cancelled', 'true');
 
             const response = await api.get(`/orders?${params}`);
             if (response.data && response.data.orders) {
@@ -77,11 +78,20 @@ const Orders: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    };
+    }, [page, perPage, channel, status, search, startDate, endDate, excludeCancelled]);
+
+    // Calculate summary from current filtered orders
+    const summary = React.useMemo(() => {
+        const totalOrders = total;
+        const displayedOrders = orders.length;
+        const totalAmount = orders.reduce((sum, o) => sum + (o.total_amount || 0), 0);
+        const avgOrderValue = displayedOrders > 0 ? totalAmount / displayedOrders : 0;
+        return { totalOrders, displayedOrders, totalAmount, avgOrderValue };
+    }, [orders, total]);
 
     useEffect(() => {
         fetchOrders();
-    }, [channel, status, page, startDate, endDate]);
+    }, [fetchOrders]);
 
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault();
@@ -267,7 +277,77 @@ const Orders: React.FC = () => {
                                 <i className="bi bi-filter me-1"></i> กรอง
                             </button>
                         </div>
+                        <div className="col-md-2 d-flex align-items-center">
+                            <div className="form-check form-switch">
+                                <input
+                                    type="checkbox"
+                                    className="form-check-input"
+                                    id="excludeCancelled"
+                                    checked={excludeCancelled}
+                                    onChange={(e) => { setExcludeCancelled(e.target.checked); setPage(1); }}
+                                />
+                                <label className="form-check-label small" htmlFor="excludeCancelled">
+                                    ซ่อนยกเลิก
+                                </label>
+                            </div>
+                        </div>
                     </form>
+                </div>
+            </div>
+
+            {/* Summary Cards */}
+            <div className="row g-3 mb-3">
+                <div className="col-md-3">
+                    <div className="card border-0 shadow-sm bg-primary text-white">
+                        <div className="card-body py-3">
+                            <div className="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <div className="small opacity-75">ออเดอร์ทั้งหมด</div>
+                                    <div className="fs-4 fw-bold">{summary.totalOrders.toLocaleString()}</div>
+                                </div>
+                                <i className="bi bi-cart3 fs-2 opacity-50"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div className="col-md-3">
+                    <div className="card border-0 shadow-sm bg-success text-white">
+                        <div className="card-body py-3">
+                            <div className="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <div className="small opacity-75">ยอดขายรวม (หน้านี้)</div>
+                                    <div className="fs-4 fw-bold">฿{summary.totalAmount.toLocaleString()}</div>
+                                </div>
+                                <i className="bi bi-cash-stack fs-2 opacity-50"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div className="col-md-3">
+                    <div className="card border-0 shadow-sm bg-info text-white">
+                        <div className="card-body py-3">
+                            <div className="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <div className="small opacity-75">ค่าเฉลี่ย/ออเดอร์</div>
+                                    <div className="fs-4 fw-bold">฿{summary.avgOrderValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                                </div>
+                                <i className="bi bi-graph-up fs-2 opacity-50"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div className="col-md-3">
+                    <div className="card border-0 shadow-sm bg-secondary text-white">
+                        <div className="card-body py-3">
+                            <div className="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <div className="small opacity-75">ช่วงเวลา</div>
+                                    <div className="fs-6 fw-bold">{startDate} - {endDate}</div>
+                                </div>
+                                <i className="bi bi-calendar-range fs-2 opacity-50"></i>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 

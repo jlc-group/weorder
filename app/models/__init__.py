@@ -1,5 +1,5 @@
 from .base import TimestampMixin, UUIDMixin
-from .master import Company, Warehouse, SalesChannel, AppUser, Role, UserRole
+from .master import Company, Warehouse, SalesChannel, Department, AppUser, Role, UserRole
 from .product import Product, ProductSetBom
 from .customer import CustomerAccount
 from .order import OrderHeader, OrderItem, OrderMemo
@@ -14,12 +14,13 @@ from .audit import AuditLog
 from .integration import PlatformConfig, SyncJob, WebhookLog
 from .mapping import PlatformListing, PlatformListingItem
 from .sync_log import SyncLog, SyncStatus
+from .label_log import LabelPrintLog
 
 __all__ = [
     # Base
     "TimestampMixin", "UUIDMixin",
     # Master
-    "Company", "Warehouse", "SalesChannel", "AppUser", "Role", "UserRole",
+    "Company", "Warehouse", "SalesChannel", "Department", "AppUser", "Role", "UserRole",
     # Product
     "Product", "ProductSetBom",
     # Customer
@@ -48,5 +49,7 @@ __all__ = [
     "PlatformListing", "PlatformListingItem",
     # Sync
     "SyncLog", "SyncStatus",
+    # Label
+    "LabelPrintLog",
 ]
 

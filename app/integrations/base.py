@@ -58,7 +58,11 @@ class NormalizedOrder:
     # Timestamps
     order_created_at: Optional[datetime] = None
     order_updated_at: Optional[datetime] = None
-    
+
+    # Order Source Classification
+    is_affiliate_order: bool = False  # Order from affiliate/creator
+    is_live_order: bool = False  # Order from live stream
+
     # Items
     items: List[Dict[str, Any]] = None
     

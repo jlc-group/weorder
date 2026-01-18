@@ -45,6 +45,17 @@ class SalesChannel(Base):
     # Relationships
     orders = relationship("OrderHeader", back_populates="channel")
 
+class Department(Base, UUIDMixin, TimestampMixin):
+    """Department/แผนก"""
+    __tablename__ = "department"
+    
+    code = Column(String(50), unique=True, nullable=False)
+    name = Column(String(100), nullable=False)
+    description = Column(Text)  # Store allowed_pages as JSON
+    
+    # Relationships
+    users = relationship("AppUser", back_populates="department")
+
 class Role(Base, UUIDMixin):
     """User Role"""
     __tablename__ = "role"
@@ -65,8 +76,10 @@ class AppUser(Base, UUIDMixin, TimestampMixin):
     full_name = Column(String(200))
     hashed_password = Column(String(255))
     is_active = Column(Boolean, default=True)
+    department_id = Column(UUID(as_uuid=True), ForeignKey("department.id"), nullable=True)
     
     # Relationships
+    department = relationship("Department", back_populates="users")
     user_roles = relationship("UserRole", back_populates="user")
     orders_created = relationship("OrderHeader", foreign_keys="OrderHeader.created_by", back_populates="creator")
     orders_sold = relationship("OrderHeader", foreign_keys="OrderHeader.sales_by", back_populates="sales_person")

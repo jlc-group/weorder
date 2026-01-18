@@ -46,19 +46,20 @@ class SyncHistoryItem(BaseModel):
         from_attributes = True
 
 
-async def run_sync_background(db_factory, sync_id: str):
-    """Background task to run sync"""
+from app.core.database import SessionLocal
+
+
+# Background sync that properly updates sync log
+async def run_sync_background():
+    """Background task to run sync with proper status update"""
     global _current_sync_id
     
-    db = db_factory()
+    db = SessionLocal()
     try:
-        # Get sync log record
-        sync_log = db.query(SyncLog).filter(SyncLog.id == sync_id).first()
-        if not sync_log:
-            logger.error(f"Sync log not found: {sync_id}")
-            return
+        # Get the last running sync log
+        sync_log = db.query(SyncLog).filter(SyncLog.status == SyncStatus.RUNNING.value).order_by(desc(SyncLog.started_at)).first()
         
-        logger.info(f"Starting background sync: {sync_id}")
+        logger.info(f"Starting background sync")
         
         # Run the actual sync
         results = await sync_service.sync_all_platforms(db)
@@ -78,24 +79,24 @@ async def run_sync_background(db_factory, sync_id: str):
                 total_errors += 1
         
         # Update sync log
-        sync_log.completed_at = datetime.now(timezone.utc)
-        sync_log.status = SyncStatus.SUCCESS.value if total_errors == 0 else SyncStatus.FAILED.value
-        sync_log.stats = {
-            "fetched": total_fetched,
-            "created": total_created,
-            "updated": total_updated,
-            "errors": total_errors,
-            "details": results
-        }
-        db.commit()
-        
-        logger.info(f"Sync completed: {sync_id} - fetched={total_fetched}, created={total_created}")
+        if sync_log:
+            sync_log.completed_at = datetime.now(timezone.utc)
+            sync_log.status = SyncStatus.SUCCESS.value if total_errors == 0 else SyncStatus.FAILED.value
+            sync_log.stats = {
+                "fetched": total_fetched,
+                "created": total_created,
+                "updated": total_updated,
+                "errors": total_errors,
+                "details": results
+            }
+            db.commit()
+            logger.info(f"Sync completed: fetched={total_fetched}, created={total_created}, updated={total_updated}")
         
     except Exception as e:
-        logger.error(f"Sync failed: {sync_id} - {e}")
+        logger.error(f"Sync failed: {e}")
         
         # Update sync log with error
-        sync_log = db.query(SyncLog).filter(SyncLog.id == sync_id).first()
+        sync_log = db.query(SyncLog).filter(SyncLog.status == SyncStatus.RUNNING.value).order_by(desc(SyncLog.started_at)).first()
         if sync_log:
             sync_log.completed_at = datetime.now(timezone.utc)
             sync_log.status = SyncStatus.FAILED.value
@@ -106,16 +107,6 @@ async def run_sync_background(db_factory, sync_id: str):
         _current_sync_id = None
         db.close()
 
-
-from app.core.database import SessionLocal
-
-# Wrapper to ensure fresh DB session for background task
-async def run_sync_background():
-    db = SessionLocal()
-    try:
-        await sync_service.sync_all_platforms(db)
-    finally:
-        db.close()
 
 @router.post("/trigger", response_model=SyncTriggerResponse)
 async def trigger_sync(

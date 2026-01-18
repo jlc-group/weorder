@@ -5,6 +5,7 @@ import type { Order } from '../types';
 
 interface FinanceSummary {
     today_revenue: number;
+    today_gross_revenue: number;
     paid_today: number;
     pending_count: number;
     pending_amount: number;
@@ -127,9 +128,16 @@ const Finance: React.FC = () => {
                     <div className="card h-100 border-0 shadow-sm">
                         <div className="card-body text-center">
                             <div className="fs-4 fw-bold text-success">
-                                ฿{loading ? '...' : (summary?.today_revenue?.toLocaleString() || '0')}
+                                ฿{loading ? '...' : (summary?.today_gross_revenue?.toLocaleString() || '0')}
                             </div>
-                            <div className="small text-muted">รับวันนี้</div>
+                            <div className="small text-muted" title="ยอดขายรวมส่วนลด Platform (ใช้สำหรับภาษีขาย)">
+                                รายได้รวม (Tax Base)
+                            </div>
+                            {summary?.today_revenue !== summary?.today_gross_revenue && (
+                                <div className="text-muted extra-small" style={{ fontSize: '0.7rem' }}>
+                                    (ลูกค้าจ่าย: ฿{(summary?.today_revenue || 0).toLocaleString()})
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>

@@ -30,10 +30,13 @@ from app.api.prepack import router as prepack_router
 from app.api.reporting import router as reporting_router
 from app.api.product_set import router as product_set_router
 from app.api.endpoints import listings as listings_router
+from app.api.users import router as users_router, roles_router, departments_router
+from app.api.auth import router as auth_router
 
 api_router = APIRouter(tags=["API"])
 
 # Include sub-routers
+api_router.include_router(auth_router)
 api_router.include_router(webhook_router)
 api_router.include_router(integrations_router)
 api_router.include_router(invoice_request_router)
@@ -42,9 +45,15 @@ api_router.include_router(prepack_router)
 api_router.include_router(reporting_router)
 api_router.include_router(product_set_router)
 api_router.include_router(listings_router.router, prefix="/listings", tags=["listings"])
+api_router.include_router(users_router)
+api_router.include_router(roles_router)
+api_router.include_router(departments_router)
 
 from app.api.sync import router as sync_router
 api_router.include_router(sync_router)
+
+from app.api.labels import router as labels_router
+api_router.include_router(labels_router)
 
 
 
@@ -73,13 +82,22 @@ def list_orders(
     search: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
+    exclude_cancelled: bool = Query(False),
+    sku_qty: Optional[str] = Query(None),  # Format: "L14-70G:2,L3-40G:1"
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=10000),
     db: Session = Depends(get_db)
 ):
-    orders, total = OrderService.get_orders(
-        db, channel, status, search, start_date, end_date, page, per_page
-    )
+    # If sku_qty filter is specified, use specialized method
+    if sku_qty:
+        sku_qty_list = [s.strip() for s in sku_qty.split(",") if s.strip()]
+        orders, total = OrderService.get_orders_by_sku_qty(
+            db, sku_qty_list, channel, status, page, per_page
+        )
+    else:
+        orders, total = OrderService.get_orders(
+            db, channel, status, search, start_date, end_date, page, per_page, exclude_cancelled
+        )
     return {
         "orders": [
             {
@@ -135,6 +153,101 @@ def get_sku_summary(
         start_date=start_date,
         end_date=end_date
     )
+
+
+@api_router.get("/orders/sku-quantity-breakdown")
+def get_sku_quantity_breakdown(
+    sku: str = Query(...),
+    channel: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Get breakdown of orders by quantity for a specific SKU (1ชิ้น, 2ชิ้น, 3+ชิ้น)"""
+    from sqlalchemy import case
+    
+    query = db.query(
+        OrderItem.quantity,
+        func.count(OrderItem.id).label('order_count')
+    ).join(OrderHeader).filter(
+        OrderItem.sku == sku
+    )
+    
+    if channel and channel != "all" and channel != "ALL":
+        query = query.filter(OrderHeader.channel_code == channel)
+    
+    if status and status != "all":
+        if "," in status:
+            status_list = [s.strip() for s in status.split(",")]
+            query = query.filter(OrderHeader.status_normalized.in_(status_list))
+        else:
+            query = query.filter(OrderHeader.status_normalized == status)
+    
+    results = query.group_by(OrderItem.quantity).order_by(OrderItem.quantity).all()
+    
+    # Group into 1, 2, 3+ buckets
+    breakdown = {"qty_1": 0, "qty_2": 0, "qty_3_plus": 0}
+    for qty, count in results:
+        if qty == 1:
+            breakdown["qty_1"] = count
+        elif qty == 2:
+            breakdown["qty_2"] = count
+        else:
+            breakdown["qty_3_plus"] += count
+    
+    return breakdown
+
+
+@api_router.get("/orders/pending-collection")
+def get_pending_collection_orders(
+    channel: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db)
+):
+    """
+    Get orders that have been marked as Ready-to-Ship (printed labels) 
+    but have NOT been collected by courier yet (no collection_time).
+    These are orders where the label was printed but courier hasn't scanned them.
+    """
+    from sqlalchemy import and_
+    
+    query = db.query(OrderHeader).filter(
+        and_(
+            OrderHeader.status_normalized == "READY_TO_SHIP",
+            OrderHeader.rts_time.isnot(None),
+            OrderHeader.collection_time.is_(None)
+        )
+    )
+    
+    if channel and channel != "ALL":
+        query = query.filter(OrderHeader.channel_code == channel)
+    
+    # Get total count
+    total = query.count()
+    
+    # Paginate
+    orders = query.order_by(OrderHeader.rts_time.desc()).offset((page - 1) * per_page).limit(per_page).all()
+    
+    return {
+        "orders": [
+            {
+                "id": str(o.id),
+                "external_order_id": o.external_order_id,
+                "channel_code": o.channel_code,
+                "customer_name": o.customer_name,
+                "tracking_number": o.tracking_number or "",
+                "courier_code": o.courier_code or "-",
+                "rts_time": o.rts_time.isoformat() if o.rts_time else None,
+                "total_amount": float(o.total_amount or 0),
+                "items_count": len(o.items),
+            }
+            for o in orders
+        ],
+        "total": total,
+        "page": page,
+        "per_page": per_page
+    }
+
 
 @api_router.post("/orders/batch-status")
 def batch_update_status(data: dict, db: Session = Depends(get_db)):
@@ -614,6 +727,7 @@ def get_order(order_id: str, db: Session = Depends(get_db)):
         "discount_amount": float(order.discount_amount or 0),
         "shipping_fee": float(order.shipping_fee or 0),
         "total_amount": float(order.total_amount or 0),
+        "order_datetime": order.order_datetime.isoformat() if order.order_datetime else None,
         "created_at": order.created_at.isoformat() if order.created_at else None,
         "raw_payload": order.raw_payload,
         "items": [

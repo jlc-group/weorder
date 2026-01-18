@@ -36,7 +36,8 @@ class OrderService:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         page: int = 1,
-        per_page: int = 50
+        per_page: int = 50,
+        exclude_cancelled: bool = False
     ) -> Tuple[List[OrderHeader], int]:
         """Get orders with filters and pagination"""
         query = db.query(OrderHeader)
@@ -78,6 +79,10 @@ class OrderService:
             else:
                 query = query.filter(OrderHeader.status_normalized == status)
         
+        # Exclude cancelled orders if requested
+        if exclude_cancelled:
+            query = query.filter(OrderHeader.status_normalized.notin_(["CANCELLED", "RETURNED"]))
+        
         if search:
             search_term = f"%{search}%"
             query = query.filter(
@@ -87,6 +92,73 @@ class OrderService:
                     OrderHeader.customer_phone.ilike(search_term)
                 )
             )
+        
+        total = query.count()
+        
+        orders = query.order_by(OrderHeader.order_datetime.desc())\
+            .offset((page - 1) * per_page)\
+            .limit(per_page)\
+            .all()
+        
+        return orders, total
+    
+    @staticmethod
+    def get_orders_by_sku_qty(
+        db: Session,
+        sku_qty_filters: List[str],  # Format: ["L14-70G:2", "L3-40G:1"]
+        channel: Optional[str] = None,
+        status: Optional[str] = None,
+        page: int = 1,
+        per_page: int = 50
+    ) -> Tuple[List[OrderHeader], int]:
+        """Get orders filtered by SKU + consolidated quantity"""
+        # Build subquery to get order_ids matching the SKU+qty criteria
+        from sqlalchemy import text, literal
+        
+        # Parse sku_qty filters
+        sku_qty_conditions = []
+        for filter_str in sku_qty_filters:
+            parts = filter_str.split(":")
+            if len(parts) == 2:
+                sku, qty_str = parts
+                qty = int(qty_str)
+                sku_qty_conditions.append((sku, qty))
+        
+        if not sku_qty_conditions:
+            return [], 0
+        
+        # Subquery: get order_ids where sum(quantity) for SKU matches target qty
+        matching_order_ids = set()
+        
+        for sku, target_qty in sku_qty_conditions:
+            # Get orders with this SKU having the target consolidated quantity
+            subq = db.query(OrderItem.order_id)\
+                .join(OrderHeader)\
+                .filter(OrderItem.sku == sku)
+            
+            # Apply status filter
+            if status and status != "all":
+                if "," in status:
+                    status_list = [s.strip() for s in status.split(",")]
+                    subq = subq.filter(OrderHeader.status_normalized.in_(status_list))
+                else:
+                    subq = subq.filter(OrderHeader.status_normalized == status)
+            
+            if channel and channel != "all" and channel != "ALL":
+                subq = subq.filter(func.lower(OrderHeader.channel_code) == channel.lower())
+            
+            # Group by order and filter by sum(qty)
+            subq = subq.group_by(OrderItem.order_id)\
+                .having(func.sum(OrderItem.quantity) == target_qty if target_qty < 3 else func.sum(OrderItem.quantity) >= 3)
+            
+            order_ids = [r[0] for r in subq.all()]
+            matching_order_ids.update(order_ids)
+        
+        if not matching_order_ids:
+            return [], 0
+        
+        # Now fetch the actual orders
+        query = db.query(OrderHeader).filter(OrderHeader.id.in_(matching_order_ids))
         
         total = query.count()
         
@@ -667,7 +739,11 @@ class OrderService:
             query = query.filter(OrderHeader.channel_code == channel)
         
         if status and status != "all":
-            query = query.filter(OrderHeader.status_normalized == status)
+            if "," in status:
+                status_list = [s.strip() for s in status.split(",")]
+                query = query.filter(OrderHeader.status_normalized.in_(status_list))
+            else:
+                query = query.filter(OrderHeader.status_normalized == status)
         
         if search:
             search_term = f"%{search}%"
@@ -679,12 +755,73 @@ class OrderService:
                 )
             )
 
-        # Group by SKU and order by count desc
-        results = query.group_by(OrderItem.sku) \
-            .order_by(func.count(OrderItem.id).desc()) \
-            .all()
+        # Step 1: Get total quantity per order per SKU (consolidate duplicate rows)
+        # This handles cases where TikTok stores same SKU as multiple rows
+        from sqlalchemy import literal
         
-        return [{"sku": r[0], "count": r[1]} for r in results]
+        # Subquery: sum quantity per order per SKU
+        order_sku_qty = db.query(
+            OrderItem.order_id,
+            OrderItem.sku,
+            func.sum(OrderItem.quantity).label('qty_sum')
+        ).join(OrderHeader) \
+            .filter(OrderItem.sku.isnot(None)) \
+            .filter(OrderItem.sku != '')
+        
+        # Apply status filter
+        if status and status != "all":
+            if "," in status:
+                status_list = [s.strip() for s in status.split(",")]
+                order_sku_qty = order_sku_qty.filter(OrderHeader.status_normalized.in_(status_list))
+            else:
+                order_sku_qty = order_sku_qty.filter(OrderHeader.status_normalized == status)
+        
+        if channel and channel != "all" and channel != "ALL":
+            order_sku_qty = order_sku_qty.filter(func.lower(OrderHeader.channel_code) == channel.lower())
+        
+        if search:
+            search_term = f"%{search}%"
+            order_sku_qty = order_sku_qty.filter(
+                or_(
+                    OrderHeader.external_order_id.ilike(search_term),
+                    OrderHeader.customer_name.ilike(search_term),
+                    OrderHeader.customer_phone.ilike(search_term)
+                )
+            )
+        
+        # Group by order + SKU to get consolidated qty per order
+        order_sku_results = order_sku_qty.group_by(OrderItem.order_id, OrderItem.sku).all()
+        
+        # Step 2: Aggregate into per-SKU summaries with qty breakdown
+        sku_data = {}
+        for order_id, sku, qty_sum in order_sku_results:
+            qty_sum = int(qty_sum) if qty_sum else 1
+            
+            if sku not in sku_data:
+                sku_data[sku] = {
+                    "sku": sku,
+                    "count": 0,
+                    "total_qty": 0,
+                    "qty_1": 0,
+                    "qty_2": 0,
+                    "qty_3_plus": 0
+                }
+            
+            # Each row here = 1 order (since we grouped by order_id, sku)
+            sku_data[sku]["count"] += 1
+            sku_data[sku]["total_qty"] += qty_sum
+            
+            # Breakdown by consolidated quantity
+            if qty_sum == 1:
+                sku_data[sku]["qty_1"] += 1
+            elif qty_sum == 2:
+                sku_data[sku]["qty_2"] += 1
+            else:
+                sku_data[sku]["qty_3_plus"] += 1
+        
+        # Sort by count descending
+        sorted_skus = sorted(sku_data.values(), key=lambda x: x["count"], reverse=True)
+        return sorted_skus
 
     @staticmethod
     async def batch_arrange_shipment(

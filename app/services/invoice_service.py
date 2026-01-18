@@ -71,13 +71,18 @@ class InvoiceService:
                 "phone": order.customer_phone or "-",
             }
         
-        # Calculate VAT (assume prices include VAT 7%)
-        subtotal_with_vat = float(order.subtotal_amount or 0)
-        vat_rate = Decimal("0.07")
-        # Price includes VAT, so: price = base + base*0.07 = base * 1.07
-        # base = price / 1.07
-        base_amount = subtotal_with_vat / 1.07
-        vat_amount = subtotal_with_vat - base_amount
+        # Calculate VAT (based on Gross Revenue including subsidies)
+        # Gross Revenue = Customer Pay + Platform Discount + Shipping Subsidy
+        total_amount = float(order.total_amount or 0)
+        platform_discount = float(order.platform_discount_amount or 0)
+        shipping_subsidy = float(order.shipping_fee_platform_discount or 0)
+        
+        gross_revenue = total_amount + platform_discount + shipping_subsidy
+        
+        vat_rate_val = Decimal("0.07")
+        # Price includes VAT, so: price = base * 1.07
+        base_amount = gross_revenue / 1.07
+        vat_amount = gross_revenue - base_amount
         
         # Prepare line items
         items = []
@@ -100,8 +105,8 @@ class InvoiceService:
         # Sales Person
         sales_person = order.sales_by or order.channel_code or "-"
         
-        # Calculate Baht Text
-        baht_text = InvoiceService.numeric_to_thai(order.total_amount or 0)
+        # Calculate Baht Text on GROSS amount
+        baht_text = InvoiceService.numeric_to_thai(gross_revenue)
         
         return {
             "invoice_number": invoice_number,
@@ -118,7 +123,7 @@ class InvoiceService:
             "vat_amount": round(vat_amount, 2),
             "shipping_fee": float(order.shipping_fee or 0),
             "discount": float(order.discount_amount or 0),
-            "grand_total": float(order.total_amount or 0),
+            "grand_total": float(gross_revenue),
             "grand_total_text": baht_text,
         }
 

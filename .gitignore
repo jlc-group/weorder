@@ -23,6 +23,7 @@ wheels/
 # Virtual Environment
 .venv/
 venv/
+venv_*/
 ENV/
 env/
 
@@ -72,3 +73,9 @@ static/uploads/
 secrets/
 *.pem
 *.key
+
+# Temp/Misc
+nohup.out
+sync_progress.json
+sync_status_report.txt
+.archive/

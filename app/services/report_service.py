@@ -8,16 +8,17 @@ from uuid import UUID
 
 from app.core import settings
 from app.models import OrderHeader, OrderItem
+from app.models.label_log import LabelPrintLog
 
 
 class ReportService:
     
     @staticmethod
-    def get_daily_outbound_stats(db: Session, date: datetime.date, warehouse_id: str = None, cutoff_hour: int = 12) -> Dict[str, Any]:
+    def get_daily_outbound_stats(db: Session, date: datetime.date, warehouse_id: str = None, cutoff_hour: int = 0) -> Dict[str, Any]:
         """
         Get statistics of items shipped on a specific date.
-        Uses rts_time (Ready to Ship time) as the stable date anchor.
-        Supports 'Batch Awareness' via cutoff_hour (default 12 for noon-to-noon GMT+7).
+        Uses shipped_at field to determine the shipping date.
+        Date is based on Thai timezone (shipped_at date in Thai time).
         """
         from app.models.mapping import PlatformListing
         from app.models.product import Product
@@ -26,25 +27,14 @@ class ReportService:
         try:
             tz = ZoneInfo(settings.TIMEZONE)
         except:
-            tz = ZoneInfo("UTC")
+            tz = ZoneInfo("Asia/Bangkok")
 
-        # Start/End Handling with Cut-off
-        # A 12:00 PM cut-off means "Jan 11 Report" covers:
-        # Jan 10 12:00:00 Thai (GMT+7) -> Jan 11 11:59:59 Thai (GMT+7)
-        target_day_noon = datetime.combine(date, time(cutoff_hour, 0, 0)).replace(tzinfo=tz)
+        # shipped_at is already stored in Thai timezone
+        # Query using date range directly (no UTC conversion needed)
+        start_dt = datetime.combine(date, time.min)
+        end_dt = datetime.combine(date, time.max)
         
-        if cutoff_hour > 0:
-            start_local = target_day_noon - timedelta(days=1)
-            end_local = target_day_noon - timedelta(seconds=1)
-        else:
-            # Standard Midnight to Midnight
-            start_local = datetime.combine(date, time.min).replace(tzinfo=tz)
-            end_local = datetime.combine(date, time.max).replace(tzinfo=tz)
-        
-        start_utc = start_local.astimezone(timezone.utc)
-        end_utc = end_local.astimezone(timezone.utc)
-        
-        # 1. Fetch Orders + Items anchored by rts_time
+        # 1. Fetch Orders + Items anchored by shipped_at
         query = db.query(
             OrderHeader.id,
             OrderHeader.channel_code,
@@ -54,9 +44,9 @@ class ReportService:
         ).join(OrderHeader, OrderItem.order_id == OrderHeader.id)
         
         query = query.filter(
-            OrderHeader.status_normalized.notin_(['CANCELLED', 'RETURNED', 'PENDING', 'UNPAID']),
-            OrderHeader.rts_time >= start_utc,
-            OrderHeader.rts_time <= end_utc
+            OrderHeader.status_normalized.notin_(['CANCELLED', 'RETURNED']),
+            OrderHeader.shipped_at >= start_dt,
+            OrderHeader.shipped_at <= end_dt
         )
         
         if warehouse_id:
@@ -156,12 +146,43 @@ class ReportService:
         return {
             "date": date.isoformat(),
             "cutoff_hour": cutoff_hour,
-            "window_start": start_local.isoformat(),
-            "window_end": end_local.isoformat(),
+            "window_start": start_dt.isoformat(),
+            "window_end": end_dt.isoformat(),
             "total_skus": len(items_data),
             "total_items": sum(i["total_quantity"] for i in items_data),
             "total_orders": len(global_orders),
             "items": items_data,
-            "platforms": final_platform_stats
+            "platforms": final_platform_stats,
+            # Add label stats for accurate "packed" counts
+            "label_stats": ReportService.get_label_stats(db, date)
         }
 
+    @staticmethod
+    def get_label_stats(db: Session, target_date: datetime.date) -> Dict[str, Any]:
+        """
+        Get label print stats for a specific date.
+        This is the accurate "packed/shipped" count based on when labels were printed.
+        """
+        start_dt = datetime.combine(target_date, time.min)
+        end_dt = datetime.combine(target_date, time.max)
+        
+        # Query label logs for the date
+        results = db.query(
+            LabelPrintLog.platform,
+            func.count(LabelPrintLog.id).label('count')
+        ).filter(
+            LabelPrintLog.printed_at >= start_dt,
+            LabelPrintLog.printed_at <= end_dt
+        ).group_by(LabelPrintLog.platform).all()
+        
+        platforms = {}
+        total = 0
+        for platform, count in results:
+            platforms[platform or 'unknown'] = count
+            total += count
+        
+        return {
+            "total_labels": total,
+            "by_platform": platforms,
+            "source": "label_print_log"
+        }

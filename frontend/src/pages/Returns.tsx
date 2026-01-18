@@ -97,6 +97,7 @@ const Returns: React.FC = () => {
             'RETURNED': 'bg-danger',
             'TO_RETURN': 'bg-warning text-dark',
             'RETURN_INITIATED': 'bg-warning text-dark',
+            'DELIVERY_FAILED': 'bg-danger',
             'COMPLETED': 'bg-success', // Refunded?
         };
         return <span className={`badge ${classes[status] || 'bg-secondary'}`}>{status}</span>;

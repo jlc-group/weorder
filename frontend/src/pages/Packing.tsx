@@ -42,6 +42,7 @@ const Packing: React.FC = () => {
     // Search and filter state
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
+    const [selectedSkuQty, setSelectedSkuQty] = useState<Set<string>>(new Set()); // Format: "SKU:qty" e.g. "L14-70G:2"
     const [showSkuDropdown, setShowSkuDropdown] = useState(false);
     const [selectedPlatform, setSelectedPlatform] = useState<string>('ALL'); // ALL, tiktok, shopee, lazada
 
@@ -51,12 +52,98 @@ const Packing: React.FC = () => {
     // Pagination state
     const [page, setPage] = useState(1);
     const [totalOrders, setTotalOrders] = useState(0);
-    const ORDERS_PER_PAGE = 500;
+    const ORDERS_PER_PAGE = 50;
+
+    // SKU Summary type with quantity breakdown
+    type SkuSummaryItem = { sku: string; count: number; total_qty: number; qty_1: number; qty_2: number; qty_3_plus: number };
 
     const [selectAllMatching, setSelectAllMatching] = useState(false);
-    const [skuSummary, setSkuSummary] = useState<Record<string, number>>({});
+    const [skuSummary, setSkuSummary] = useState<Record<string, SkuSummaryItem>>({});
+
+    // Sync state
+    const [isSyncing, setIsSyncing] = useState(false);
+    const [syncStatus, setSyncStatus] = useState<string | null>(null);
+
+    // Trigger sync from platforms
+    const triggerPlatformSync = async () => {
+        if (isSyncing) return;
+
+        setIsSyncing(true);
+        setSyncStatus('กำลัง sync จาก Platforms...');
+
+        try {
+            // Trigger sync
+            const { data } = await api.post('/sync/trigger');
+            setSyncStatus(`เริ่ม sync แล้ว (ID: ${data.sync_id})`);
+
+            // Poll for completion
+            let attempts = 0;
+            const maxAttempts = 60; // 5 minutes max
+
+            const checkStatus = async () => {
+                attempts++;
+                const { data: status } = await api.get('/sync/status');
+
+                if (!status.is_running) {
+                    // Sync completed
+                    const last = status.last_sync;
+                    if (last?.stats) {
+                        const stats = last.stats;
+                        setSyncStatus(`✅ Sync เสร็จ: +${stats.created || 0} ใหม่, ~${stats.updated || 0} อัพเดต`);
+                    } else {
+                        setSyncStatus('✅ Sync เสร็จสิ้น');
+                    }
+                    setIsSyncing(false);
+                    // Reload orders
+                    loadQueue(1);
+                    loadSkuSummary();
+                } else if (attempts < maxAttempts) {
+                    // Still running, check again in 5 seconds
+                    setTimeout(checkStatus, 5000);
+                } else {
+                    setSyncStatus('⚠️ Sync ใช้เวลานาน กำลังรันอยู่...');
+                    setIsSyncing(false);
+                }
+            };
+
+            // Start polling after 3 seconds
+            setTimeout(checkStatus, 3000);
+
+        } catch (e: any) {
+            console.error('Sync failed:', e);
+            setSyncStatus('❌ Sync ล้มเหลว: ' + (e.response?.data?.detail || e.message));
+            setIsSyncing(false);
+        }
+    };
 
     // ...
+
+    // Pending Collection state (printed but not picked up)
+    const [pendingCollectionCount, setPendingCollectionCount] = useState(0);
+    const [showPendingModal, setShowPendingModal] = useState(false);
+    const [pendingOrders, setPendingOrders] = useState<any[]>([]);
+    const [loadingPending, setLoadingPending] = useState(false);
+
+    const loadPendingCollectionCount = async () => {
+        try {
+            const { data } = await api.get('/orders/pending-collection?per_page=1');
+            setPendingCollectionCount(data.total || 0);
+        } catch (e) {
+            console.error('Failed to load pending collection count:', e);
+        }
+    };
+
+    const loadPendingOrders = async () => {
+        setLoadingPending(true);
+        try {
+            const { data } = await api.get('/orders/pending-collection?per_page=100');
+            setPendingOrders(data.orders || []);
+        } catch (e) {
+            console.error('Failed to load pending orders:', e);
+        } finally {
+            setLoadingPending(false);
+        }
+    };
 
     // Reset select all matching when filter changes
     useEffect(() => {
@@ -69,6 +156,7 @@ const Packing: React.FC = () => {
         loadPrepackBoxes();
         // Initial load of summary
         loadSkuSummary();
+        loadPendingCollectionCount();
     }, []);
 
     // Reload summary when platform/search changes (but not when pagination changes)
@@ -76,16 +164,28 @@ const Packing: React.FC = () => {
         loadSkuSummary();
     }, [selectedPlatform, searchQuery]);
 
+    // Reload orders when SKU+Qty filter changes
+    useEffect(() => {
+        if (selectedSkuQty.size > 0) {
+            loadQueue(1);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedSkuQty]);
+
     const loadQueue = async (pageNum = 1) => {
         // ... (existing loadQueue logic)
         setLoading(true);
         try {
-            let url = `/orders?status=PAID,PACKING&per_page=${ORDERS_PER_PAGE}&page=${pageNum}`;
+            let url = `/orders?status=PAID,PACKING,READY_TO_SHIP&per_page=${ORDERS_PER_PAGE}&page=${pageNum}`;
             if (selectedPlatform !== 'ALL') {
                 url += `&channel=${selectedPlatform}`;
             }
             if (searchQuery) {
                 url += `&search=${searchQuery}`;
+            }
+            // Add SKU+Qty filters if any selected
+            if (selectedSkuQty.size > 0) {
+                url += `&sku_qty=${Array.from(selectedSkuQty).join(',')}`;
             }
             const { data } = await api.get(url);
             setOrders(data.orders || []);
@@ -103,15 +203,22 @@ const Packing: React.FC = () => {
 
     const loadSkuSummary = async () => {
         try {
-            let url = `/orders/sku-summary?status=PAID,PACKING`;
+            let url = `/orders/sku-summary?status=PAID,PACKING,READY_TO_SHIP`;
             if (selectedPlatform !== 'ALL') url += `&channel=${selectedPlatform}`;
             if (searchQuery) url += `&search=${searchQuery}`;
 
             const { data } = await api.get(url);
-            // Convert list [{sku, count}] to dict {sku: count}
-            const summary: Record<string, number> = {};
-            data.forEach((item: any) => {
-                summary[item.sku] = item.count;
+            // Convert list to dict with all breakdown fields
+            const summary: Record<string, SkuSummaryItem> = {};
+            data.forEach((item: SkuSummaryItem) => {
+                summary[item.sku] = {
+                    sku: item.sku,
+                    count: item.count,
+                    total_qty: item.total_qty || item.count,
+                    qty_1: item.qty_1 || 0,
+                    qty_2: item.qty_2 || 0,
+                    qty_3_plus: item.qty_3_plus || 0
+                };
             });
             setSkuSummary(summary);
         } catch (e) {
@@ -193,10 +300,59 @@ const Packing: React.FC = () => {
         setBatchItems(newItems);
     };
 
+    // Type for SKU data with count, total quantity and qty breakdown
+    type SkuData = { count: number; total_qty: number; qty_1: number; qty_2: number; qty_3_plus: number };
+
     const sortedSkus = useMemo(() =>
-        Object.entries(skuSummary).sort((a, b) => b[1] - a[1]),
+        Object.entries(skuSummary).sort((a, b) => b[1].count - a[1].count) as [string, SkuData][],
         [skuSummary]
     );
+
+    // Helper function to extract SKU prefix (e.g., "L3-40G" -> "L3", "SET_D3X2" -> "SET")
+    const extractSkuPrefix = (sku: string): string => {
+        // Try to match patterns like L3, L4, L6, L14, L19, SET, CR, etc.
+        const match = sku.match(/^([A-Z]+\d*)/i);
+        if (match) {
+            return match[1].toUpperCase();
+        }
+        // Fallback: take first part before - or _
+        const parts = sku.split(/[-_]/);
+        return parts[0].toUpperCase() || 'OTHER';
+    };
+
+    // Group SKUs by prefix for organized dropdown with qty breakdown
+    type GroupedSkuItem = { sku: string; count: number; total_qty: number; qty_1: number; qty_2: number; qty_3_plus: number };
+
+    const groupedSkus = useMemo(() => {
+        const groups: Record<string, Array<GroupedSkuItem>> = {};
+
+        sortedSkus.forEach(([sku, data]) => {
+            const prefix = extractSkuPrefix(sku);
+            if (!groups[prefix]) {
+                groups[prefix] = [];
+            }
+            groups[prefix].push({
+                sku,
+                count: data.count,
+                total_qty: data.total_qty,
+                qty_1: data.qty_1 || 0,
+                qty_2: data.qty_2 || 0,
+                qty_3_plus: data.qty_3_plus || 0
+            });
+        });
+
+        // Sort groups by total count descending
+        const sortedGroups = Object.entries(groups)
+            .map(([prefix, skus]) => ({
+                prefix,
+                skus,
+                totalCount: skus.reduce((sum, item) => sum + item.count, 0),
+                totalQty: skus.reduce((sum, item) => sum + item.total_qty, 0)
+            }))
+            .sort((a, b) => b.totalCount - a.totalCount);
+
+        return sortedGroups;
+    }, [sortedSkus]);
 
     // Filter orders based on search and selected SKUs
     // ...
@@ -249,8 +405,21 @@ const Packing: React.FC = () => {
         setSelectedSkus(newSet);
     };
 
+    // Toggle SKU+Qty combo (e.g., "L14-70G:2" for orders with 2 items of L14-70G)
+    const toggleSkuQty = (sku: string, qty: number) => {
+        const key = `${sku}:${qty}`;
+        const newSet = new Set(selectedSkuQty);
+        if (newSet.has(key)) {
+            newSet.delete(key);
+        } else {
+            newSet.add(key);
+        }
+        setSelectedSkuQty(newSet);
+    };
+
     const clearSkuFilter = () => {
         setSelectedSkus(new Set());
+        setSelectedSkuQty(new Set());
     };
 
     // Select all visible (for current filter)
@@ -571,9 +740,25 @@ const Packing: React.FC = () => {
             title="แพ็คสินค้า"
             breadcrumb={breadcrumb}
             actions={
-                <button className="btn btn-outline-primary" onClick={() => loadQueue()} disabled={loading}>
-                    <i className={`bi ${loading ? 'bi-arrow-repeat spin' : 'bi-arrow-clockwise'} me-1`}></i> รีเฟรช
-                </button>
+                <div className="d-flex align-items-center gap-2">
+                    {syncStatus && (
+                        <span className={`badge ${isSyncing ? 'bg-warning text-dark' : 'bg-light text-dark'}`}>
+                            {syncStatus}
+                        </span>
+                    )}
+                    <button
+                        className="btn btn-success"
+                        onClick={triggerPlatformSync}
+                        disabled={isSyncing}
+                        title="ดึงข้อมูลใหม่จาก TikTok, Shopee, Lazada"
+                    >
+                        <i className={`bi ${isSyncing ? 'bi-arrow-repeat spin' : 'bi-cloud-download'} me-1`}></i>
+                        {isSyncing ? 'กำลัง Sync...' : 'Sync จาก Platforms'}
+                    </button>
+                    <button className="btn btn-outline-primary" onClick={() => loadQueue()} disabled={loading}>
+                        <i className={`bi ${loading ? 'bi-arrow-repeat spin' : 'bi-arrow-clockwise'} me-1`}></i> รีเฟรช
+                    </button>
+                </div>
             }
         >
             {/* Tabs */}
@@ -631,12 +816,78 @@ const Packing: React.FC = () => {
                         </div>
                     </div>
                     <div className="col-6 col-md-3">
-                        <div className="card border-0 shadow-sm h-100">
+                        <div
+                            className={`card border-0 shadow-sm h-100 ${pendingCollectionCount > 0 ? 'bg-danger bg-opacity-10 cursor-pointer' : ''}`}
+                            onClick={() => {
+                                if (pendingCollectionCount > 0) {
+                                    loadPendingOrders();
+                                    setShowPendingModal(true);
+                                }
+                            }}
+                            style={{ cursor: pendingCollectionCount > 0 ? 'pointer' : 'default' }}
+                        >
                             <div className="card-body text-center py-3">
-                                <div className="fs-2 fw-bold text-info">{sortedSkus.length}</div>
-                                <div className="text-muted small">
-                                    <i className="bi bi-tags me-1"></i>SKU ทั้งหมด
+                                <div className={`fs-2 fw-bold ${pendingCollectionCount > 0 ? 'text-danger' : 'text-muted'}`}>
+                                    {pendingCollectionCount.toLocaleString()}
                                 </div>
+                                <div className="text-muted small">
+                                    <i className="bi bi-exclamation-triangle me-1"></i>รอขนส่งมารับ
+                                </div>
+                                {pendingCollectionCount > 0 && (
+                                    <div className="text-danger small mt-1">
+                                        <i className="bi bi-eye me-1"></i>คลิกดูรายละเอียด
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Pending Collection Modal */}
+            {showPendingModal && (
+                <div className="modal show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                    <div className="modal-dialog modal-lg modal-dialog-scrollable">
+                        <div className="modal-content">
+                            <div className="modal-header">
+                                <h5 className="modal-title">
+                                    <i className="bi bi-exclamation-triangle text-danger me-2"></i>
+                                    ออเดอร์ที่ปริ้นแล้วแต่ยังไม่ถูกรับ ({pendingCollectionCount})
+                                </h5>
+                                <button className="btn-close" onClick={() => setShowPendingModal(false)}></button>
+                            </div>
+                            <div className="modal-body">
+                                {loadingPending ? (
+                                    <div className="text-center py-4">
+                                        <div className="spinner-border text-primary"></div>
+                                    </div>
+                                ) : (
+                                    <table className="table table-sm table-hover">
+                                        <thead>
+                                            <tr>
+                                                <th>Order ID</th>
+                                                <th>Platform</th>
+                                                <th>ลูกค้า</th>
+                                                <th>Tracking</th>
+                                                <th>RTS เมื่อ</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {pendingOrders.map((order) => (
+                                                <tr key={order.id}>
+                                                    <td><code>{order.external_order_id}</code></td>
+                                                    <td><span className="badge bg-secondary">{order.channel_code}</span></td>
+                                                    <td>{order.customer_name || '-'}</td>
+                                                    <td><code>{order.tracking_number || '-'}</code></td>
+                                                    <td>{order.rts_time ? new Date(order.rts_time).toLocaleString('th-TH') : '-'}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
+                            <div className="modal-footer">
+                                <button className="btn btn-secondary" onClick={() => setShowPendingModal(false)}>ปิด</button>
                             </div>
                         </div>
                     </div>
@@ -734,22 +985,110 @@ const Packing: React.FC = () => {
                                             </div>
 
                                             <div className="overflow-auto custom-scrollbar" style={{ flex: 1 }}>
-                                                {sortedSkus.length === 0 ? (
+                                                {groupedSkus.length === 0 ? (
                                                     <div className="text-center text-muted py-4 small">ไม่พบข้อมูลสินค้า</div>
                                                 ) : (
                                                     <div className="list-group list-group-flush">
-                                                        {sortedSkus.map(([sku, count]) => (
-                                                            <button
-                                                                key={sku}
-                                                                data-sku={sku}
-                                                                className={`list-group-item list-group-item-action sku-option-item d-flex justify-content-between align-items-center py-2 px-3 ${selectedSkus.has(sku) ? 'bg-primary bg-opacity-10 text-primary fw-medium' : ''}`}
-                                                                onClick={() => toggleSku(sku)}
-                                                            >
-                                                                <span className="text-truncate me-2" title={sku}>{sku}</span>
-                                                                <span className={`badge rounded-pill ${selectedSkus.has(sku) ? 'bg-primary' : 'bg-secondary bg-opacity-50 text-dark'}`}>
-                                                                    {count}
-                                                                </span>
-                                                            </button>
+                                                        {groupedSkus.map((group) => (
+                                                            <div key={group.prefix} className="mb-1">
+                                                                {/* Group Header */}
+                                                                <div
+                                                                    className="list-group-item bg-light border-0 py-2 px-3 d-flex justify-content-between align-items-center sticky-top"
+                                                                    style={{ cursor: 'pointer', fontSize: '0.85rem' }}
+                                                                    onClick={() => {
+                                                                        // Select all SKUs in this group
+                                                                        const allInGroup = group.skus.map(item => item.sku);
+                                                                        const allSelected = allInGroup.every(sku => selectedSkus.has(sku));
+                                                                        const newSet = new Set(selectedSkus);
+                                                                        if (allSelected) {
+                                                                            allInGroup.forEach(sku => newSet.delete(sku));
+                                                                        } else {
+                                                                            allInGroup.forEach(sku => newSet.add(sku));
+                                                                        }
+                                                                        setSelectedSkus(newSet);
+                                                                    }}
+                                                                >
+                                                                    <div className="d-flex align-items-center">
+                                                                        <i className="bi bi-box-seam me-2 text-primary"></i>
+                                                                        <span className="fw-bold text-dark">{group.prefix}</span>
+                                                                        <span className="badge bg-secondary ms-2">{group.skus.length} รายการ</span>
+                                                                    </div>
+                                                                    <div className="d-flex align-items-center gap-2">
+                                                                        <span className="badge bg-info rounded-pill" title="จำนวนชิ้น">{group.totalQty} ชิ้น</span>
+                                                                        <span className="badge bg-primary rounded-pill" title="จำนวนออเดอร์">{group.totalCount}</span>
+                                                                    </div>
+                                                                </div>
+
+                                                                {/* SKUs in Group */}
+                                                                {group.skus.map((item) => (
+                                                                    <div key={item.sku}>
+                                                                        <button
+                                                                            data-sku={item.sku}
+                                                                            className={`list-group-item list-group-item-action sku-option-item d-flex justify-content-between align-items-center py-2 px-3 ps-4 ${selectedSkus.has(item.sku) ? 'bg-primary bg-opacity-10 text-primary fw-medium' : ''}`}
+                                                                            onClick={() => toggleSku(item.sku)}
+                                                                            style={{ fontSize: '0.85rem' }}
+                                                                        >
+                                                                            <div className="d-flex align-items-center">
+                                                                                <i className={`bi ${selectedSkus.has(item.sku) ? 'bi-check-square-fill text-primary' : 'bi-square'} me-2`}></i>
+                                                                                <span className="text-truncate" title={item.sku}>{item.sku}</span>
+                                                                            </div>
+                                                                            <div className="d-flex align-items-center gap-1">
+                                                                                {item.total_qty !== item.count && (
+                                                                                    <span className="badge bg-info bg-opacity-75 rounded-pill small" title="จำนวนชิ้น">{item.total_qty}ชิ้น</span>
+                                                                                )}
+                                                                                <span className={`badge rounded-pill ${selectedSkus.has(item.sku) ? 'bg-primary' : 'bg-secondary bg-opacity-50 text-dark'}`} title="จำนวนออเดอร์">
+                                                                                    {item.count}
+                                                                                </span>
+                                                                            </div>
+                                                                        </button>
+
+                                                                        {/* Quantity breakdown - clickable sub-filters */}
+                                                                        {(item.qty_2 > 0 || item.qty_3_plus > 0) && (
+                                                                            <div className="ps-5 bg-light bg-opacity-50" style={{ fontSize: '0.75rem' }}>
+                                                                                {item.qty_1 > 0 && (
+                                                                                    <button
+                                                                                        className={`d-flex justify-content-between w-100 border-0 py-1 px-3 ${selectedSkuQty.has(`${item.sku}:1`) ? 'bg-secondary bg-opacity-25' : 'bg-transparent'}`}
+                                                                                        onClick={(e) => { e.stopPropagation(); toggleSkuQty(item.sku, 1); }}
+                                                                                        style={{ cursor: 'pointer' }}
+                                                                                    >
+                                                                                        <span className="text-muted">
+                                                                                            <i className={`bi ${selectedSkuQty.has(`${item.sku}:1`) ? 'bi-check-square text-primary' : 'bi-square'} me-1`}></i>
+                                                                                            สั่ง x1
+                                                                                        </span>
+                                                                                        <span className={`badge rounded-pill ${selectedSkuQty.has(`${item.sku}:1`) ? 'bg-primary' : 'bg-secondary bg-opacity-50 text-dark'}`}>{item.qty_1}</span>
+                                                                                    </button>
+                                                                                )}
+                                                                                {item.qty_2 > 0 && (
+                                                                                    <button
+                                                                                        className={`d-flex justify-content-between w-100 border-0 py-1 px-3 ${selectedSkuQty.has(`${item.sku}:2`) ? 'bg-warning bg-opacity-25' : 'bg-transparent'}`}
+                                                                                        onClick={(e) => { e.stopPropagation(); toggleSkuQty(item.sku, 2); }}
+                                                                                        style={{ cursor: 'pointer' }}
+                                                                                    >
+                                                                                        <span className="text-warning">
+                                                                                            <i className={`bi ${selectedSkuQty.has(`${item.sku}:2`) ? 'bi-check-square-fill text-warning' : 'bi-square'} me-1`}></i>
+                                                                                            สั่ง x2
+                                                                                        </span>
+                                                                                        <span className={`badge rounded-pill ${selectedSkuQty.has(`${item.sku}:2`) ? 'bg-warning text-dark' : 'bg-warning bg-opacity-50 text-dark'}`}>{item.qty_2}</span>
+                                                                                    </button>
+                                                                                )}
+                                                                                {item.qty_3_plus > 0 && (
+                                                                                    <button
+                                                                                        className={`d-flex justify-content-between w-100 border-0 py-1 px-3 ${selectedSkuQty.has(`${item.sku}:3`) ? 'bg-danger bg-opacity-25' : 'bg-transparent'}`}
+                                                                                        onClick={(e) => { e.stopPropagation(); toggleSkuQty(item.sku, 3); }}
+                                                                                        style={{ cursor: 'pointer' }}
+                                                                                    >
+                                                                                        <span className="text-danger">
+                                                                                            <i className={`bi ${selectedSkuQty.has(`${item.sku}:3`) ? 'bi-check-square-fill text-danger' : 'bi-square'} me-1`}></i>
+                                                                                            สั่ง x3+
+                                                                                        </span>
+                                                                                        <span className={`badge rounded-pill ${selectedSkuQty.has(`${item.sku}:3`) ? 'bg-danger' : 'bg-danger bg-opacity-50'}`}>{item.qty_3_plus}</span>
+                                                                                    </button>
+                                                                                )}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                ))}
+                                                            </div>
                                                         ))}
                                                     </div>
                                                 )}
@@ -810,7 +1149,7 @@ const Packing: React.FC = () => {
                                         className="badge bg-primary d-flex align-items-center gap-1"
                                         style={{ fontSize: '0.9rem' }}
                                     >
-                                        {sku} ({skuSummary[sku] || 0})
+                                        {sku} ({skuSummary[sku]?.count || 0})
                                         <button
                                             className="btn-close btn-close-white ms-1"
                                             style={{ fontSize: '0.6rem' }}

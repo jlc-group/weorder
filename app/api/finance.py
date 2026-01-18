@@ -316,7 +316,7 @@ async def sync_platform_finance(
 @finance_router.get("/transactions")
 def list_transactions(
     platform: Optional[str] = None,
-    sort: str = Query("date_desc", regex="^(date_asc|date_desc|amount_asc|amount_desc)$"),
+    sort: str = Query("date_desc", pattern="^(date_asc|date_desc|amount_asc|amount_desc)$"),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db)
@@ -393,6 +393,173 @@ def get_finance_performance(
     return FinanceService.get_performance_dashboard(db, dt_start, dt_end)
 
 
+@finance_router.get("/fee-details")
+def get_fee_details(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Get detailed fee breakdown from MarketplaceTransaction raw_data.
+    Returns itemized fees like TikTok statement format.
+    """
+    from datetime import datetime, time
+    from sqlalchemy import func, text
+    import calendar
+    
+    # Default to current month
+    today = datetime.now().date()
+    if not start_date:
+        start_date = today.replace(day=1)
+    if not end_date:
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        end_date = today.replace(day=last_day)
+    
+    dt_start = datetime.combine(start_date, time.min)
+    dt_end = datetime.combine(end_date, time.max)
+    
+    # Fee breakdown structure
+    fee_breakdown = {
+        "period": {"start": start_date.isoformat(), "end": end_date.isoformat()},
+        "platforms": {}
+    }
+    
+    # TikTok - Query from raw_data with detailed fields
+    try:
+        tiktok_result = db.execute(text("""
+            SELECT 
+                COUNT(*) as order_count,
+                COALESCE(SUM(CAST(raw_data->>'platform_commission_amount' AS NUMERIC)), 0) as platform_commission,
+                COALESCE(SUM(CAST(raw_data->>'affiliate_commission_amount' AS NUMERIC)), 0) as affiliate_commission,
+                COALESCE(SUM(CAST(raw_data->>'affiliate_ads_commission_amount' AS NUMERIC)), 0) as affiliate_ads_commission,
+                COALESCE(SUM(CAST(raw_data->>'affiliate_partner_commission_amount' AS NUMERIC)), 0) as affiliate_partner_commission,
+                COALESCE(SUM(CAST(raw_data->>'actual_shipping_fee_amount' AS NUMERIC)), 0) as actual_shipping_fee,
+                COALESCE(SUM(CAST(raw_data->>'platform_shipping_fee_discount_amount' AS NUMERIC)), 0) as platform_shipping_discount,
+                COALESCE(SUM(CAST(raw_data->>'referral_fee_amount' AS NUMERIC)), 0) as referral_fee,
+                COALESCE(SUM(CAST(raw_data->>'retail_delivery_fee_amount' AS NUMERIC)), 0) as retail_delivery_fee,
+                COALESCE(SUM(CAST(raw_data->>'fbt_fulfillment_fee_amount' AS NUMERIC)), 0) as fbt_fee,
+                COALESCE(SUM(CAST(raw_data->>'fee_amount' AS NUMERIC)), 0) as total_fee,
+                COALESCE(SUM(CAST(raw_data->>'gross_sales_amount' AS NUMERIC)), 0) as gross_sales,
+                COALESCE(SUM(CAST(raw_data->>'settlement_amount' AS NUMERIC)), 0) as settlement
+            FROM marketplace_transaction
+            WHERE platform = 'tiktok' 
+              AND transaction_type = 'ORDER'
+              AND transaction_date >= :start_date 
+              AND transaction_date <= :end_date
+        """), {"start_date": dt_start, "end_date": dt_end}).first()
+        
+        if tiktok_result:
+            fee_breakdown["platforms"]["tiktok"] = {
+                "platform_name": "TikTok Shop",
+                "order_count": int(tiktok_result.order_count or 0),
+                "gross_sales": float(tiktok_result.gross_sales or 0),
+                "total_fees": float(tiktok_result.total_fee or 0),
+                "settlement": float(tiktok_result.settlement or 0),
+                "details": [
+                    {"name": "ค่าคอมมิชชั่น TikTok Shop", "amount": float(tiktok_result.platform_commission or 0)},
+                    {"name": "ค่าคอมมิชชั่น Affiliate", "amount": float(tiktok_result.affiliate_commission or 0)},
+                    {"name": "ค่าคอมมิชชั่น Affiliate Ads", "amount": float(tiktok_result.affiliate_ads_commission or 0)},
+                    {"name": "ค่าคอมมิชชั่นพันธมิตร", "amount": float(tiktok_result.affiliate_partner_commission or 0)},
+                    {"name": "ค่าส่งที่ร้านค้าจ่ายจริง", "amount": float(tiktok_result.actual_shipping_fee or 0)},
+                    {"name": "ส่วนลดค่าส่งจาก Platform", "amount": float(tiktok_result.platform_shipping_discount or 0)},
+                    {"name": "ค่า Referral Fee", "amount": float(tiktok_result.referral_fee or 0)},
+                    {"name": "ค่า Retail Delivery", "amount": float(tiktok_result.retail_delivery_fee or 0)},
+                    {"name": "ค่า FBT Fulfillment", "amount": float(tiktok_result.fbt_fee or 0)},
+                ]
+            }
+    except Exception as e:
+        print(f"Error fetching TikTok fee details: {e}")
+    
+    # Shopee - Query from transaction_type breakdown
+    try:
+        shopee_txs = db.query(
+            MarketplaceTransaction.transaction_type,
+            func.sum(MarketplaceTransaction.amount).label("total")
+        ).filter(
+            MarketplaceTransaction.platform == 'shopee',
+            MarketplaceTransaction.transaction_date >= dt_start,
+            MarketplaceTransaction.transaction_date <= dt_end
+        ).group_by(MarketplaceTransaction.transaction_type).all()
+        
+        shopee_order_count = db.query(func.count(MarketplaceTransaction.id)).filter(
+            MarketplaceTransaction.platform == 'shopee',
+            MarketplaceTransaction.transaction_type == 'ORDER',
+            MarketplaceTransaction.transaction_date >= dt_start,
+            MarketplaceTransaction.transaction_date <= dt_end
+        ).scalar() or 0
+        
+        if shopee_txs:
+            details = []
+            total_fees = 0
+            gross_revenue = 0
+            for tx_type, amount in shopee_txs:
+                amt = float(amount or 0)
+                if tx_type == 'COMMISSION_FEE':
+                    details.append({"name": "ค่าคอมมิชชั่น Shopee", "amount": amt})
+                    total_fees += amt
+                elif tx_type == 'SERVICE_FEE':
+                    details.append({"name": "ค่าบริการ Shopee", "amount": amt})
+                    total_fees += amt
+                elif tx_type == 'TRANSACTION_FEE':
+                    details.append({"name": "ค่าธุรกรรม", "amount": amt})
+                    total_fees += amt
+                elif tx_type == 'PAYMENT_FEE':
+                    details.append({"name": "ค่าชำระเงิน", "amount": amt})
+                    total_fees += amt
+                elif tx_type == 'SHIPPING_FEE':
+                    details.append({"name": "ค่าขนส่ง", "amount": amt})
+                    total_fees += amt
+                elif tx_type == 'ITEM_PRICE':
+                    gross_revenue = amt
+                    
+            fee_breakdown["platforms"]["shopee"] = {
+                "platform_name": "Shopee",
+                "order_count": int(shopee_order_count),
+                "gross_sales": gross_revenue,
+                "total_fees": total_fees,
+                "details": details
+            }
+    except Exception as e:
+        print(f"Error fetching Shopee fee details: {e}")
+    
+    # Lazada - Similar approach
+    try:
+        lazada_txs = db.query(
+            MarketplaceTransaction.transaction_type,
+            func.sum(MarketplaceTransaction.amount).label("total")
+        ).filter(
+            MarketplaceTransaction.platform == 'lazada',
+            MarketplaceTransaction.transaction_date >= dt_start,
+            MarketplaceTransaction.transaction_date <= dt_end
+        ).group_by(MarketplaceTransaction.transaction_type).all()
+        
+        if lazada_txs:
+            details = []
+            total_fees = 0
+            for tx_type, amount in lazada_txs:
+                amt = float(amount or 0)
+                if tx_type in ['COMMISSION_FEE', 'SERVICE_FEE', 'TRANSACTION_FEE', 'PAYMENT_FEE', 'SHIPPING_FEE']:
+                    details.append({"name": tx_type.replace("_", " ").title(), "amount": amt})
+                    total_fees += amt
+                    
+            fee_breakdown["platforms"]["lazada"] = {
+                "platform_name": "Lazada",
+                "total_fees": total_fees,
+                "details": details
+            }
+    except Exception as e:
+        print(f"Error fetching Lazada fee details: {e}")
+    
+    # Calculate totals
+    total_all_fees = sum(
+        p.get("total_fees", 0) 
+        for p in fee_breakdown["platforms"].values()
+    )
+    fee_breakdown["total_fees"] = total_all_fees
+    
+    return fee_breakdown
+
+
 @finance_router.get("/profit/{order_id}")
 
 def get_order_profit_breakdown(order_id: str, db: Session = Depends(get_db)):
@@ -412,16 +579,6 @@ def get_order_profit_breakdown(order_id: str, db: Session = Depends(get_db)):
     txs = db.query(MarketplaceTransaction).filter(
         MarketplaceTransaction.order_id == order.id
     ).all()
-    
-    # Get calculated profit record
-    from app.models.finance import order_profit
-    # Actually, order_profit might be a table/model not imported?
-    # I see it in psql \dt. Let's check imports.
-    # It was 'from app.models.finance import MarketplaceTransaction' above.
-    # Let me check if order_profit is in app.models.order or finance.
-    
-    # Based on previous psql \d, it references company and order_header.
-    # I'll try to find the model definition.
     
     breakdown = {
         "external_order_id": order.external_order_id,
@@ -457,3 +614,264 @@ def get_order_profit_breakdown(order_id: str, db: Session = Depends(get_db)):
     breakdown["net_income"] = breakdown["revenue"]["total_gross_revenue"] + total_deductions
     
     return breakdown
+
+
+@finance_router.get("/profitability")
+def get_order_profitability(
+    start_date: datetime = Query(...),
+    end_date: datetime = Query(...),
+    db: Session = Depends(get_db)
+):
+    from app.services.finance_service import FinanceService
+    service = FinanceService()
+    return service.get_order_profitability(db, start_date, end_date)
+
+
+@finance_router.get("/export")
+def export_finance_report(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Export finance report - DETAILED BREAKDOWN (Matching TikTok Statement)
+    """
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    from datetime import datetime
+    from sqlalchemy.orm import joinedload
+    from app.models import OrderHeader, OrderItem, Product
+    from app.models.finance import MarketplaceTransaction
+    from collections import defaultdict
+    
+    # Query Orders with Items, Product, and Linked Transactions
+    dt_start = datetime.combine(start_date, datetime.min.time())
+    dt_end = datetime.combine(end_date, datetime.max.time())
+    
+    # We query OrderHeader and join everything needed
+    orders = db.query(OrderHeader).options(
+        joinedload(OrderHeader.items).joinedload(OrderItem.product)
+    ).filter(
+        OrderHeader.order_datetime >= dt_start,
+        OrderHeader.order_datetime <= dt_end,
+        OrderHeader.status_normalized != 'CANCELLED'
+    ).order_by(OrderHeader.order_datetime).all()
+    
+    # Prepare CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Detailed Headers matching the screenshot concept
+    headers = [
+        "วันที่",
+        "Platform", 
+        "หมายเลขออเดอร์",
+        "สินค้า",
+        "ยอดขาย (Gross Sales)",
+        "ค่าส่งที่เก็บลูกค้า",
+        "ส่วนลด Platform Support",
+        "รวมรายรับ (Total Revenue)",
+        
+        # Deductions
+        "ค่าคอมมิชชั่น (Commission)",
+        "ค่าธรรมเนียมคำสั่งซื้อ (Transaction Fee)",
+        "ค่าธรรมเนียมบริการ (Service Fee)",
+        "ค่าส่งที่ร้านจ่ายจริง (Shipping Cost)",
+        "ค่าคอม Affiliate",
+        "รวมค่าธรรมเนียม (Total Fees)",
+        
+        # Result
+        "ต้นทุนสินค้า (COGS)",
+        "กำไรสุทธิ (Net Profit)",
+        "ยอดเงินเข้าบัญชี (Payout)"
+    ]
+    writer.writerow(headers)
+    
+    for order in orders:
+        # Basic Info
+        order_date = order.order_datetime.strftime("%Y-%m-%d") if order.order_datetime else ""
+        platform = order.channel_code or "Unknown"
+        order_id = order.external_order_id or order.order_number or str(order.id)
+        
+        # Items & COGS
+        items_list = []
+        cogs = 0.0
+        for item in order.items:
+            sku = item.sku or "N/A"
+            qty = item.quantity or 0
+            items_list.append(f"{sku} x{qty}")
+            if item.product:
+                cost = float(item.product.standard_cost or 0)
+                cogs += cost * qty
+        items_str = ", ".join(items_list)
+        
+        # Find associated finance transaction for this order (if synced)
+        # This is where we get the REAL numbers from platforms
+        txs = db.query(MarketplaceTransaction).filter(
+            MarketplaceTransaction.order_id == order.id
+        ).all()
+        
+        # Initialize Values
+        gross_sales = float(order.subtotal_amount or 0)
+        shipping_income = float(order.shipping_fee or 0)
+        platform_discount = float(order.platform_discount_amount or 0)
+        
+        # Fee buckets
+        commission = 0.0
+        transaction_fee = 0.0
+        service_fee = 0.0
+        shipping_cost = 0.0
+        affiliate_cost = 0.0
+        other_fees = 0.0
+        
+        payout_amount = 0.0
+        
+        if txs:
+            # Calculate actuals from Money Trail
+            # Note: Logic here depends on how we mapped types during sync
+            for tx in txs:
+                amt = float(tx.amount) # usually negative for fees
+                t_type = tx.transaction_type
+                raw = tx.raw_data or {}
+                
+                if t_type == 'COMMISSION_FEE':
+                    commission += abs(amt)
+                elif t_type == 'TRANSACTION_FEE':
+                    transaction_fee += abs(amt)
+                elif t_type == 'SERVICE_FEE':
+                    service_fee += abs(amt)
+                elif t_type == 'SHIPPING_FEE':
+                    shipping_cost += abs(amt)
+                elif 'affiliate' in (tx.description or "").lower():
+                    affiliate_cost += abs(amt)
+                elif t_type in ['ADJUSTMENT', 'PAYMENT_FEE']:
+                    other_fees += abs(amt)
+                
+                # --- Platform Specific Field Overrides (More Accurate) ---
+                if platform == 'tiktok' and raw:
+                    # TikTok keys usually end with _amount
+                    # If we find granular keys, we might want to use them instead of generic mapping
+                    # But generic mapping is populated from these keys during sync.
+                    # Let's trust the generic mapping for now, BUT add Affiliate if missed
+                    if 'affiliate_commission_amount' in raw:
+                         val = float(raw.get('affiliate_commission_amount') or 0)
+                         if val != 0 and affiliate_cost == 0:
+                             affiliate_cost += abs(val)
+
+                elif platform == 'shopee' and raw:
+                    # Shopee raw_data often contains 'order_income' dict with full breakdown
+                    income_data = raw.get('order_income', {})
+                    if income_data:
+                        # If this transaction holds the full breakdown (usually COMMISSION_FEE type has proper keys)
+                        # We might double count if we iterate multiple transactions for same order.
+                        # BE CAREFUL.
+                        # However, commonly Shopee has multiple rows: one for shipping, one for fee, etc? 
+                        # OR one big row? 
+                        # Based on sample, COMMISSION_FEE row had 'order_income' with ALL fields.
+                        # If we have multiple rows having same 'order_income', we shouldn't sum them up.
+                        # Strategy: Only parse specific keys if the current transaction TYPE matches the bucket
+                        # OR (Better for Shopee): relying on the generic types we already mapped during Sync might be safer
+                        # Sync service ALREADY exploded these into rows. checking SyncService...
+                        # Yes, sync service loops fee_mapping and creates rows.
+                        # So 'commission += abs(amt)' above should already work!
+                        
+                        # Just double check Affiliate (AMS)
+                        if 'ams_commission_fee' in income_data:
+                            val = float(income_data.get('ams_commission_fee') or 0)
+                            # Only add if we haven't captured it via generic types
+                            # Sync service likely didn't map 'ams_commission_fee' to a specific type?
+                            # Checked sync code: 'ams' was not in fee_mapping list.
+                            # So we likely missed it or it went to 'UNKNOWN'.
+                            if val > 0:
+                                # Start fresh for affiliate if not found
+                                # But wait, is this per row or global for order? 
+                                # 'order_income' is Order Level data attached to a specific transaction record.
+                                # If we have 3 transactions for this order, and all have 'order_income', we shouldn't sum 3 times.
+                                # We should typically use the 'max' found logic or only read from one specific type.
+                                pass
+             
+            # Payout is sum of all transactions for this order
+            payout_amount = sum(float(t.amount) for t in txs)
+            
+            # Special logic for Shopee AMS (Affiliate) if not captured
+            # Check if any transaction has raw_data with AMS fee
+            if platform == 'shopee' and affiliate_cost == 0:
+                for tx in txs:
+                    raw = tx.raw_data or {}
+                    income = raw.get('order_income', {})
+                    ams = float(income.get('ams_commission_fee') or 0) + float(income.get('order_ams_commission_fee') or 0)
+                    if ams > 0:
+                        affiliate_cost = ams
+                        # Subtract from payout? Usually payout already deducts it? 
+                        # Payout = Sum(amounts). If AMS wasn't a separate negative row, then Payout is inflated?
+                        # Wait, 'order_income' fields like 'ams_commission_fee' are informational. 
+                        # Actual deduction happens in 'escrow_amount'.
+                        # If Shopee didn't generate a specific transaction line for AMS, 
+                        # then 'payout_amount' (sum of lines) might be correct (net), 
+                        # but 'affiliate_cost' breakdown would be missing.
+                        # So we can safely specific affiliate_cost here for display without altering Payout.
+                        break
+            
+            # Payout is sum of all transactions for this order
+            payout_amount = sum(float(t.amount) for t in txs)
+        else:
+            # Fallback to Estimates if no finance data
+            payout_amount = (gross_sales + shipping_income) - (gross_sales * 0.12) # Dummy est
+            transaction_fee = gross_sales * 0.03
+            commission = gross_sales * 0.04
+            service_fee = gross_sales * 0.05
+        
+        # Total Revenue
+        total_revenue = gross_sales + shipping_income + platform_discount
+        
+        # Total Deductions
+        total_fees = commission + transaction_fee + service_fee + shipping_cost + affiliate_cost + other_fees
+        
+        # Net Profit
+        # Profit = Revenue - Fees - COGS
+        # Note: Payout usually includes shipping income but excludes platform discount (which is subsidized)
+        # So Profit = (Payout + Subsidies) - COGS ?? 
+        # Simpler: Profit = (Sales + ShipIncome) - Fees - COGS
+        net_profit = total_revenue - total_fees - cogs
+        
+        writer.writerow([
+            order_date,
+            platform,
+            order_id,
+            items_str,
+            f"{gross_sales:.2f}",
+            f"{shipping_income:.2f}",
+            f"{platform_discount:.2f}",
+            f"{total_revenue:.2f}",
+            
+            f"{commission:.2f}",
+            f"{transaction_fee:.2f}",
+            f"{service_fee:.2f}",
+            f"{shipping_cost:.2f}",
+            f"{affiliate_cost:.2f}",
+            f"{total_fees:.2f}",
+            
+            f"{cogs:.2f}",
+            f"{net_profit:.2f}",
+            f"{payout_amount:.2f}"
+        ])
+        
+    output.seek(0)
+    
+    # Add BOM
+    bom = '\ufeff'
+    content = bom + output.getvalue()
+    
+    response = StreamingResponse(
+        iter([content]),
+        media_type="text/csv; charset=utf-8"
+    )
+    
+    filename = f"รายงานละเอียด_{start_date}_{end_date}.csv"
+    import urllib.parse
+    encoded_filename = urllib.parse.quote(filename)
+    response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
+    
+    return response
+

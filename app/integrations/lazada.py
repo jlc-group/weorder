@@ -355,3 +355,64 @@ class LazadaClient(BasePlatformClient):
             "timestamp": payload.get("timestamp"),
             "data": payload.get("data", {}),
         }
+
+    async def get_order_trace(self, order_id: str) -> Optional[Dict]:
+        """
+        Get order tracking trace/history
+        API: /logistic/order/trace (GetOrderTrace)
+        
+        Returns tracking events including "Picked Up" or "Scanned" events with event_time
+        """
+        try:
+            data = await self._make_request("/logistic/order/trace", params={"order_id": order_id})
+            return data
+        except Exception as e:
+            logger.error(f"Error fetching order trace for {order_id}: {e}")
+            return None
+
+    def extract_pickup_time_from_trace(self, trace_data: Dict) -> Optional[datetime]:
+        """
+        Extract pickup time from order trace by finding "Picked Up" or "Scanned" event
+        
+        Returns datetime when package was picked up by courier
+        """
+        if not trace_data:
+            return None
+            
+        # Lazada trace data structure - may be in 'module' or directly in data
+        events = trace_data.get("module", [])
+        if not events and isinstance(trace_data, list):
+            events = trace_data
+            
+        pickup_keywords = [
+            "picked up",
+            "successful turn over",
+            "scanned",
+            "collected",
+            "received from seller",
+            "รับพัสดุ",
+            "รับสินค้า"
+        ]
+        
+        for event in events:
+            title = (event.get("title") or event.get("code") or "").lower()
+            description = (event.get("description") or "").lower()
+            
+            if any(keyword in title or keyword in description for keyword in pickup_keywords):
+                event_time = event.get("event_time") or event.get("time")
+                if event_time:
+                    try:
+                        # Handle different time formats
+                        if isinstance(event_time, str):
+                            # Format: YYYY-MM-DD HH:mm:ss or ISO format
+                            if "T" in event_time:
+                                return datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+                            else:
+                                return datetime.strptime(event_time, "%Y-%m-%d %H:%M:%S")
+                        elif isinstance(event_time, (int, float)):
+                            return datetime.fromtimestamp(event_time)
+                    except Exception as e:
+                        logger.warning(f"Failed to parse event_time {event_time}: {e}")
+        
+        return None
+

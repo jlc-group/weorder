@@ -15,6 +15,11 @@ interface ReportData {
     total_orders: number;
     items: OutboundItem[];
     platforms?: Record<string, { orders: number, items: number }>;
+    label_stats?: {
+        total_labels: number;
+        by_platform: Record<string, number>;
+        source: string;
+    };
 }
 
 const DailyOutbound: React.FC = () => {
@@ -149,6 +154,42 @@ const DailyOutbound: React.FC = () => {
                             </div>
                         </div>
                     </div>
+
+                    {/* Label Print Stats - Accurate Packed Count */}
+                    {reportData.label_stats && (
+                        <div className="row g-3 mb-4">
+                            <div className="col-12">
+                                <div className="card border-success">
+                                    <div className="card-header bg-success text-white">
+                                        <h6 className="mb-0">
+                                            <i className="bi bi-printer me-2"></i>
+                                            ยอดแพ็คจริง (Label Print Log) - ข้อมูลจากการกด Print ในระบบ
+                                        </h6>
+                                    </div>
+                                    <div className="card-body">
+                                        <div className="row text-center">
+                                            <div className="col-md-3">
+                                                <h2 className="text-success fw-bold">{reportData.label_stats.total_labels.toLocaleString()}</h2>
+                                                <div className="small text-muted">กล่องทั้งหมด</div>
+                                            </div>
+                                            <div className="col-md-3">
+                                                <h4 className="text-warning fw-bold">{(reportData.label_stats.by_platform?.shopee || 0).toLocaleString()}</h4>
+                                                <div className="small text-muted">Shopee</div>
+                                            </div>
+                                            <div className="col-md-3">
+                                                <h4 className="text-dark fw-bold">{(reportData.label_stats.by_platform?.tiktok || 0).toLocaleString()}</h4>
+                                                <div className="small text-muted">TikTok</div>
+                                            </div>
+                                            <div className="col-md-3">
+                                                <h4 className="text-primary fw-bold">{(reportData.label_stats.by_platform?.lazada || 0).toLocaleString()}</h4>
+                                                <div className="small text-muted">Lazada</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Summary Cards (Total) */}
                     <div className="row g-3 mb-4">

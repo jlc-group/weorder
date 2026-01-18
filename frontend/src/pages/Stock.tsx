@@ -34,7 +34,7 @@ const Stock: React.FC = () => {
     const [outboundData, setOutboundData] = useState<OutboundData | null>(null);
 
     // Fetch stock summary
-    const fetchSummary = async () => {
+    const fetchSummary = useCallback(async () => {
         setLoading(true);
         try {
             const res = await api.get('/stock/summary');
@@ -44,10 +44,10 @@ const Stock: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
     // Fetch stock movements
-    const fetchMovements = async () => {
+    const fetchMovements = useCallback(async () => {
         setLoading(true);
         try {
             const res = await api.get('/stock/movements');
@@ -57,7 +57,7 @@ const Stock: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
     // Fetch daily outbound
     const fetchOutbound = useCallback(async () => {
@@ -78,7 +78,7 @@ const Stock: React.FC = () => {
         if (activeTab === 'summary') fetchSummary();
         else if (activeTab === 'movements') fetchMovements();
         else if (activeTab === 'outbound') fetchOutbound();
-    }, [activeTab, fetchOutbound]);
+    }, [activeTab, fetchSummary, fetchMovements, fetchOutbound]);
 
     // Filter summary by search term
     const filteredSummary = summary.filter(item =>

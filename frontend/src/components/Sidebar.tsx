@@ -19,8 +19,11 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                 </button>
 
                 <div className="sidebar-brand">
-                    <h4><i className="bi bi-box-seam me-2"></i>WeOrder</h4>
-                    <small>Order Management System</small>
+                    <img src="/logo.png" alt="JLC Group" style={{ width: '40px', height: '40px', marginRight: '10px' }} />
+                    <div>
+                        <h5 className="mb-0">JLC Group</h5>
+                        <small>WeOrder System</small>
+                    </div>
                 </div>
 
                 <div className="sidebar-nav">
@@ -62,7 +65,13 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                         <i className="bi bi-cash-stack"></i>สรุปรายวัน
                     </NavLink>
                     <NavLink to="/finance/performance" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
-                        <i className="bi bi-graph-up-arrow"></i>วิเคราะห์กำไร
+                        <i className="bi bi-graph-up-arrow"></i>สรุปผลประกอบการ
+                    </NavLink>
+                    <NavLink to="/finance/order-profit" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
+                        <i className="bi bi-receipt"></i>กำไร/Order
+                    </NavLink>
+                    <NavLink to="/finance/calculator" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
+                        <i className="bi bi-calculator"></i>คำนวณกำไร
                     </NavLink>
                     <NavLink to="/invoice-manager" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
                         <i className="bi bi-receipt-cutoff"></i>ใบกำกับภาษี
@@ -71,6 +80,9 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                     <div className="nav-section">ตั้งค่า</div>
                     <NavLink to="/settings" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
                         <i className="bi bi-plug"></i>Platform Integrations
+                    </NavLink>
+                    <NavLink to="/admin" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
+                        <i className="bi bi-shield-lock"></i>จัดการผู้ใช้
                     </NavLink>
                 </div>
             </nav>

@@ -403,8 +403,10 @@ class OrderSyncService:
             existing.courier_code = normalized.courier
             updated = True
         
-        # 3. Update raw payload
-        existing.raw_payload = normalized.raw_payload
+        # 3. Update raw payload (always update to get latest data)
+        if existing.raw_payload != normalized.raw_payload:
+            existing.raw_payload = normalized.raw_payload
+            updated = True
         
         # 4. Update shipped_at if platform provides actual pickup time OR status changed to shipped
         if normalized.status_normalized in ["SHIPPED", "DELIVERED"]:
@@ -437,6 +439,42 @@ class OrderSyncService:
                 self.db.add(item)
             updated = True
 
+        # 6. Update timestamps from raw_payload
+        raw = normalized.raw_payload or {}
+        
+        # TikTok: collection_time comes directly
+        if normalized.platform == "tiktok":
+            collection_ts = self._extract_timestamp(raw, 'collection_time')
+            if collection_ts and existing.collection_time != collection_ts:
+                existing.collection_time = collection_ts
+                updated = True
+        
+        # Shopee: use pickup_done_time as collection_time
+        elif normalized.platform == "shopee":
+            pickup_ts = self._extract_timestamp(raw, 'pickup_done_time')
+            if pickup_ts and existing.collection_time != pickup_ts:
+                existing.collection_time = pickup_ts
+                updated = True
+        
+        # Update other timestamps if not set
+        if not existing.rts_time:
+            rts_ts = self._extract_timestamp(raw, 'rts_time')
+            if rts_ts:
+                existing.rts_time = rts_ts
+                updated = True
+        
+        if not existing.paid_time:
+            paid_ts = self._extract_timestamp(raw, 'paid_time') or self._extract_timestamp(raw, 'pay_time')
+            if paid_ts:
+                existing.paid_time = paid_ts
+                updated = True
+                
+        if not existing.delivery_time:
+            delivery_ts = self._extract_timestamp(raw, 'delivery_time')
+            if delivery_ts:
+                existing.delivery_time = delivery_ts
+                updated = True
+
         if updated:
             self.db.commit()
             logger.info(
@@ -446,6 +484,7 @@ class OrderSyncService:
             return (False, True)
             
         return (False, False)
+
     
     def _auto_create_invoice_profile(self, order: OrderHeader, raw_payload: Dict[str, Any]) -> None:
         """
@@ -497,9 +536,9 @@ class OrderSyncService:
             profile = InvoiceProfile(
                 order_id=order.id,
                 profile_type="COMPANY" if info.get("tax_code") or info.get("tax_id") else "PERSONAL",
-                invoice_name=info.get("name") or info.get("invoice_name") or order.customer_name,
-                tax_id=info.get("tax_code") or info.get("tax_id") or "",
-                branch=info.get("branch") or "00000",
+                invoice_name=(info.get("name") or info.get("invoice_name") or order.customer_name)[:200],
+                tax_id=(info.get("tax_code") or info.get("tax_id") or "")[:20].strip(),
+                branch=(str(info.get("branch") or "00000"))[:50].strip(),
                 address_line1=info.get("address") or order.customer_address,
                 phone=info.get("phone") or order.customer_phone,
                 email=info.get("email"),

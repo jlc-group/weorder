@@ -207,13 +207,14 @@ async def tiktok_webhook(
                 logger.error(f"TikTok webhook signature verification failed for shop {shop_id}")
                 return {"code": 401, "message": "Invalid signature"}  # Strict Rejection
         
-        # Handle order events
-        if event_type in ["ORDER_STATUS_CHANGE", "ORDER_CREATE", "1", "2"]:
+        # Handle order events (numeric: 1=order create, 2=status change, 3=tracking, 11=status update)
+        order_event_types = ["ORDER_STATUS_CHANGE", "ORDER_CREATE", "1", "2", "3", "11"]
+        if str(event_type) in order_event_types or (isinstance(event_type, int) and event_type in [1, 2, 3, 11]):
             order_id = data.get("order_id", "")
             if order_id:
                 background_tasks.add_task(
                     process_order_webhook,
-                    db, "tiktok", order_id, event_type, str(webhook_log.id)
+                    db, "tiktok", order_id, str(event_type), str(webhook_log.id)
                 )
         
         return {"code": 0, "message": "success"}

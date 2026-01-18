@@ -41,11 +41,7 @@ class OrderHeader(Base, UUIDMixin, TimestampMixin):
     # Campaign
     campaign_code = Column(String(100))
     live_tag = Column(String(100))
-
-    # Order Source Classification
-    is_affiliate_order = Column(Boolean, default=False)  # Order from affiliate/creator
-    is_live_order = Column(Boolean, default=False)  # Order from live stream
-
+    
     # Dates
     order_datetime = Column(DateTime(timezone=True))
     shipped_at = Column(DateTime(timezone=True))

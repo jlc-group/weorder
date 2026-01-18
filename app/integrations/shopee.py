@@ -371,7 +371,7 @@ class ShopeeClient(BasePlatformClient):
             shipping_country=recipient.get("region", "TH"),
             
             order_status=raw_order.get("order_status", ""),
-            status_normalized=self.normalize_order_status(raw_order.get("order_status", "")),
+            status_normalized=self._normalize_status_with_reason(raw_order),
             
             subtotal=float(raw_order.get("total_amount", 0)),
             shipping_fee=float(raw_order.get("actual_shipping_fee", 0)),
@@ -392,6 +392,46 @@ class ShopeeClient(BasePlatformClient):
             raw_payload=raw_order,
         )
     
+    
+    def _normalize_status_with_reason(self, raw_order: Dict[str, Any]) -> str:
+        """Normalize status with checks for cancellation reason"""
+        status = raw_order.get("order_status", "")
+        normalized = self.STATUS_MAP.get(status, "NEW")
+        
+        # Check for Delivery Failed / Customer Rejected
+        # Shopee usually sets status to CANCELLED or TO_RETURN for these cases.
+        if normalized in ["CANCELLED", "RETURNED"]:
+            reason = (raw_order.get("cancel_reason") or "").lower()
+            
+            # Keywords indicating delivery failure / rejection
+            fail_keywords = [
+                "undeliverable", 
+                "delivery failed", 
+                "refused", 
+                "rejected", 
+                "recipient rejected", 
+                "buyer rejected",
+                "courier cancel", 
+                "delivery unsuccessful",
+                "lost",
+                "attempted failed"
+            ]
+            
+            if any(k in reason for k in fail_keywords):
+                return "DELIVERY_FAILED"
+                
+            # Thai keywords if present
+            thai_keywords = [
+                "ส่งไม่สำเร็จ",
+                "ปฏิเสธ",
+                "ติดต่อไม่ได้",
+                "หาไม่เจอ"
+            ]
+            if any(k in reason for k in thai_keywords):
+                return "DELIVERY_FAILED"
+                
+        return normalized
+
     def normalize_order_status(self, platform_status: str) -> str:
         """Map Shopee status to normalized status"""
         return self.STATUS_MAP.get(platform_status, "NEW")
@@ -470,3 +510,55 @@ class ShopeeClient(BasePlatformClient):
         except Exception as e:
              logger.error(f"Error fetching escrow list: {e}")
              return None
+
+    async def get_tracking_info(self, order_sn: str) -> Optional[Dict]:
+        """
+        Get tracking info for an order
+        API: /api/v2/logistics/get_tracking_info
+        
+        Returns tracking events including PICKUP_DONE status with update_time
+        """
+        await self.ensure_valid_token()
+        path = "/api/v2/logistics/get_tracking_info"
+        
+        params = self._build_common_params(path)
+        params["order_sn"] = order_sn
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{self.BASE_URL}{path}", params=params)
+                self._log_api_call("GET", path, response.status_code)
+                data = response.json()
+                
+                if data.get("error"):
+                    logger.warning(f"Shopee get_tracking_info error for {order_sn}: {data.get('message')}")
+                    return None
+                    
+                return data.get("response", {})
+        except Exception as e:
+            logger.error(f"Error fetching tracking info for {order_sn}: {e}")
+            return None
+
+    def extract_pickup_time_from_tracking(self, tracking_info: Dict) -> Optional[datetime]:
+        """
+        Extract pickup time from tracking info by finding PICKUP_DONE status
+        
+        Returns datetime when package was picked up by courier
+        """
+        if not tracking_info:
+            return None
+            
+        tracking_list = tracking_info.get("tracking_info", [])
+        
+        for event in tracking_list:
+            # Look for PICKUP_DONE status or description containing "picked up"
+            status = event.get("logistics_status", "")
+            description = (event.get("description") or "").lower()
+            
+            if status == "PICKUP_DONE" or "picked up" in description or "parcel has been picked" in description:
+                update_time = event.get("update_time")
+                if update_time:
+                    return datetime.fromtimestamp(update_time, timezone.utc)
+        
+        return None
+

@@ -101,3 +101,21 @@ class MarketplaceTransaction(Base, UUIDMixin, TimestampMixin):
     description = Column(Text)
     payout_reference = Column(String(100))  # Batch ID / Escrow ID
     raw_data = Column(JSONB)  # Full payload from API
+
+
+class InternalExpense(Base, UUIDMixin, TimestampMixin):
+    """
+    Internal Company Expenses (Overhead, Ads, Salary, etc.)
+    Used for calculating True Net Profit.
+    """
+    __tablename__ = "internal_expense"
+    
+    title = Column(String(200), nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    expense_date = Column(DateTime(timezone=True), nullable=False)
+    category = Column(String(50), nullable=False) # OPERATIONAL, MARKETING, HUMAN_RESOURCE, SOFTWARE, OTHER
+    
+    note = Column(Text)
+    evidence_url = Column(String(500)) # Link to slip/invoice
+    
+    created_by = Column(UUID(as_uuid=True), ForeignKey("app_user.id"))
