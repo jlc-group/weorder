@@ -110,7 +110,8 @@ const SuperAdmin: React.FC = () => {
         try {
             await api.put(`/users/${editingUser.id}`, {
                 email: userForm.email,
-                full_name: userForm.full_name
+                full_name: userForm.full_name,
+                department_id: userForm.department_id || null
             });
             // Update roles
             await api.post(`/users/${editingUser.id}/roles`, {
