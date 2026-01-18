@@ -90,9 +90,9 @@ class OrderSyncService:
             # Get platform client
             client = integration_service.get_client_for_config(config)
             
-            # Default time range: last 3 days (reduce for faster sync, scheduler handles historical)
+            # Default time range: last 7 days (covers older orders still pending)
             if not time_from:
-                time_from = datetime.utcnow() - timedelta(days=3)
+                time_from = datetime.utcnow() - timedelta(days=7)
             if not time_to:
                 time_to = datetime.utcnow()
             
