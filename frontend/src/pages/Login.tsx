@@ -93,6 +93,25 @@ const Login: React.FC = () => {
                             </>
                         )}
                     </button>
+
+                    {/* SSO Login Section */}
+                    <div className="login-divider">
+                        <span>หรือ</span>
+                    </div>
+
+                    <button
+                        type="button"
+                        className="sso-button"
+                        onClick={() => {
+                            // Redirect to SSO login page
+                            // For production: window.location.href = ssoConfig.login_url + ?redirect=...
+                            window.location.href = '/auth/callback?demo=true';
+                        }}
+                        disabled={loading}
+                    >
+                        <i className="bi bi-shield-lock"></i>
+                        เข้าสู่ระบบด้วย JLC SSO
+                    </button>
                 </form>
 
                 <div className="login-footer">

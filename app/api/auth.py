@@ -22,6 +22,14 @@ SECRET_KEY = getattr(settings, 'SECRET_KEY', 'weorder-secret-key-change-in-produ
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
+# ============== SSO Configuration ==============
+# These settings should be configured in .env for production
+SSO_ENABLED = getattr(settings, 'SSO_ENABLED', True)
+SSO_JWT_SECRET = getattr(settings, 'SSO_JWT_SECRET', None)  # Public key from SSO server
+SSO_JWT_ALGORITHM = getattr(settings, 'SSO_JWT_ALGORITHM', 'HS256')  # RS256 for production
+SSO_ISSUER = getattr(settings, 'SSO_ISSUER', 'https://sso.jlcgroup.co')
+SSO_LOGIN_URL = getattr(settings, 'SSO_LOGIN_URL', 'https://sso.jlcgroup.co/login')
+
 # OAuth2 scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
@@ -59,6 +67,22 @@ class UserInfo(BaseModel):
     department: Optional[dict]
     allowed_pages: List[str]
 
+
+class SSOLoginRequest(BaseModel):
+    """Request body for SSO login"""
+    token: str  # JWT token from external SSO server
+
+
+class SSOTokenClaims(BaseModel):
+    """Expected claims in SSO JWT token"""
+    sub: str  # User ID from SSO
+    username: Optional[str] = None
+    email: Optional[str] = None
+    name: Optional[str] = None  # Full name
+    roles: Optional[List[str]] = []  # Role codes: ["admin", "manager"]
+    pages: Optional[List[str]] = []  # Allowed pages: ["dashboard", "orders"]
+    iss: Optional[str] = None  # Issuer
+    exp: Optional[int] = None  # Expiry timestamp
 
 # ============== Helper Functions ==============
 
@@ -291,5 +315,200 @@ async def change_password(
     return {"message": "เปลี่ยนรหัสผ่านสำเร็จ"}
 
 
+# ============== SSO Authentication ==============
+
+def verify_sso_token(token: str) -> Optional[dict]:
+    """
+    Verify JWT token from external SSO server.
+    Returns decoded claims if valid, None if invalid.
+    
+    For production:
+    - Use RS256 with SSO server's public key
+    - Verify issuer (iss) matches SSO_ISSUER
+    - Check token expiry (exp)
+    """
+    try:
+        # Use SSO secret/public key if configured, otherwise use our secret for testing
+        secret = SSO_JWT_SECRET if SSO_JWT_SECRET else SECRET_KEY
+        algorithm = SSO_JWT_ALGORITHM if SSO_JWT_SECRET else ALGORITHM
+        
+        # Decode and verify token
+        payload = jwt.decode(
+            token,
+            secret,
+            algorithms=[algorithm],
+            options={
+                "verify_iss": bool(SSO_ISSUER),
+                "require": ["sub"]
+            },
+            issuer=SSO_ISSUER if SSO_ISSUER else None
+        )
+        return payload
+    except JWTError as e:
+        print(f"SSO token verification failed: {e}")
+        return None
+
+
+def get_or_create_sso_user(db: Session, claims: dict) -> AppUser:
+    """
+    Get user by SSO ID or create new user from SSO claims.
+    
+    Expected claims:
+    - sub: unique user ID from SSO
+    - username: login username
+    - email: user email
+    - name: full name
+    - roles: list of role codes
+    - pages: list of allowed page keys
+    """
+    import uuid as uuid_lib
+    
+    sso_id = claims.get("sub")
+    username = claims.get("username") or claims.get("preferred_username") or sso_id
+    email = claims.get("email")
+    full_name = claims.get("name") or claims.get("full_name")
+    
+    # Try to find existing user by username
+    user = db.query(AppUser).filter(AppUser.username == username).first()
+    
+    if not user:
+        # Create new user from SSO claims
+        user = AppUser(
+            id=uuid_lib.uuid4(),
+            username=username,
+            email=email,
+            full_name=full_name,
+            is_active=True,
+            hashed_password=None  # SSO users don't have local password
+        )
+        db.add(user)
+        db.flush()
+        
+        # Try to assign roles from claims
+        role_codes = claims.get("roles", [])
+        for role_code in role_codes:
+            role = db.query(Role).filter(Role.code == role_code).first()
+            if role:
+                from app.models import UserRole
+                user_role = UserRole(user_id=user.id, role_id=role.id)
+                db.add(user_role)
+        
+        db.commit()
+        db.refresh(user)
+    else:
+        # Update existing user info
+        if email and user.email != email:
+            user.email = email
+        if full_name and user.full_name != full_name:
+            user.full_name = full_name
+        db.commit()
+    
+    return user
+
+
+@router.post("/sso", response_model=Token)
+async def sso_login(
+    request: SSOLoginRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Login using JWT token from JLC Group SSO Server.
+    
+    Flow:
+    1. User logs in at SSO server
+    2. SSO server redirects to /auth/callback?token=<JWT>
+    3. Frontend sends token to this endpoint
+    4. We verify token, create/update user, and return WeOrder session
+    
+    Expected JWT Claims from SSO:
+    - sub: Unique user ID
+    - username: Login username
+    - email: User email (optional)
+    - name: Full name (optional)
+    - roles: ["super_admin", "manager", ...] (optional)
+    - pages: ["dashboard", "orders", ...] (optional)
+    """
+    if not SSO_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="SSO login is not enabled"
+        )
+    
+    # Verify SSO token
+    claims = verify_sso_token(request.token)
+    if not claims:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired SSO token"
+        )
+    
+    # Get or create user from SSO claims
+    user = get_or_create_sso_user(db, claims)
+    
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="บัญชีถูกระงับการใช้งาน"
+        )
+    
+    # Determine allowed pages (from SSO claims or from local DB roles/dept)
+    sso_pages = claims.get("pages", [])
+    if sso_pages:
+        allowed_pages = sso_pages
+    else:
+        allowed_pages = get_user_allowed_pages(user, db)
+    
+    # Create WeOrder session token
+    access_token = create_access_token(
+        data={
+            "sub": str(user.id),
+            "username": user.username,
+            "allowed_pages": allowed_pages,
+            "sso": True,  # Mark as SSO login
+        },
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    
+    # Build user info response
+    roles = [{"id": str(ur.role.id), "code": ur.role.code, "name": ur.role.name} 
+             for ur in user.user_roles if ur.role]
+    
+    department = None
+    if user.department:
+        department = {
+            "id": str(user.department.id),
+            "code": user.department.code,
+            "name": user.department.name
+        }
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(user.id),
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "roles": roles,
+            "department": department,
+            "allowed_pages": allowed_pages,
+        }
+    }
+
+
+@router.get("/sso/config")
+async def get_sso_config():
+    """
+    Get SSO configuration for frontend.
+    Returns SSO login URL and enabled status.
+    """
+    return {
+        "enabled": SSO_ENABLED,
+        "login_url": SSO_LOGIN_URL,
+        "issuer": SSO_ISSUER
+    }
+
+
 # Export password hash function for use in users.py
 __all__ = ["router", "get_password_hash", "get_current_user", "get_current_active_user"]
+

@@ -21,6 +21,7 @@ import InvoiceManager from './pages/InvoiceManager';
 import Returns from './pages/Returns';
 import DailyOutbound from './pages/DailyOutbound';
 import SuperAdmin from './pages/SuperAdmin';
+import AuthCallback from './pages/AuthCallback';
 import './App.css';
 
 // Protected Route Component
@@ -69,6 +70,9 @@ function AppRoutes() {
         path="/login"
         element={isAuthenticated ? <Navigate to="/dashboard" replace /> : <Login />}
       />
+
+      {/* SSO Callback Route */}
+      <Route path="/auth/callback" element={<AuthCallback />} />
 
       {/* Protected Routes */}
       <Route path="/" element={<ProtectedRoute><Navigate to="/dashboard" replace /></ProtectedRoute>} />
