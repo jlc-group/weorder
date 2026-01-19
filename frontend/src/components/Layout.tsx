@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import { useAuth } from '../contexts/AuthContext';
@@ -13,6 +13,8 @@ interface LayoutProps {
 const Layout: React.FC<LayoutProps> = ({ children, title = "WeOrder", breadcrumb, actions }) => {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [currentTime, setCurrentTime] = useState(new Date());
+    const [dropdownOpen, setDropdownOpen] = useState(false);
+    const dropdownRef = useRef<HTMLDivElement>(null);
     const { user, logout } = useAuth();
     const navigate = useNavigate();
 
@@ -26,6 +28,17 @@ const Layout: React.FC<LayoutProps> = ({ children, title = "WeOrder", breadcrumb
     useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 1000);
         return () => clearInterval(timer);
+    }, []);
+
+    // Close dropdown when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+                setDropdownOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
     const formatDate = (date: Date) => {
@@ -73,30 +86,31 @@ const Layout: React.FC<LayoutProps> = ({ children, title = "WeOrder", breadcrumb
                             {formatDate(currentTime)}
                         </span>
                         {user && (
-                            <div className="dropdown">
+                            <div className="dropdown" ref={dropdownRef}>
                                 <button
                                     className="btn btn-sm btn-outline-secondary dropdown-toggle"
                                     type="button"
-                                    data-bs-toggle="dropdown"
-                                    aria-expanded="false"
+                                    onClick={() => setDropdownOpen(!dropdownOpen)}
                                 >
                                     <i className="bi bi-person-circle me-1"></i>
                                     {user.username}
                                 </button>
-                                <ul className="dropdown-menu dropdown-menu-end">
-                                    <li>
-                                        <span className="dropdown-item-text small text-muted">
-                                            {user.full_name || user.username}
-                                        </span>
-                                    </li>
-                                    <li><hr className="dropdown-divider" /></li>
-                                    <li>
-                                        <button className="dropdown-item" onClick={handleLogout}>
-                                            <i className="bi bi-box-arrow-right me-2"></i>
-                                            ออกจากระบบ
-                                        </button>
-                                    </li>
-                                </ul>
+                                {dropdownOpen && (
+                                    <ul className="dropdown-menu dropdown-menu-end show" style={{ display: 'block', position: 'absolute', right: 0 }}>
+                                        <li>
+                                            <span className="dropdown-item-text small text-muted">
+                                                {user.full_name || user.username}
+                                            </span>
+                                        </li>
+                                        <li><hr className="dropdown-divider" /></li>
+                                        <li>
+                                            <button className="dropdown-item" onClick={handleLogout}>
+                                                <i className="bi bi-box-arrow-right me-2"></i>
+                                                ออกจากระบบ
+                                            </button>
+                                        </li>
+                                    </ul>
+                                )}
                             </div>
                         )}
                     </div>

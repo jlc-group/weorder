@@ -10,6 +10,7 @@ interface OrderProfit {
     revenue: number;
     cogs: number;
     fees: number;
+    fees_source?: 'actual' | 'estimate';  // actual = from MarketplaceTransaction, estimate = 12%
     net_profit: number;
     margin_percent: number;
 }
@@ -27,9 +28,12 @@ const OrderProfitability: React.FC = () => {
     });
     const [platform, setPlatform] = useState('all');
     const [profitFilter, setProfitFilter] = useState('all');
+    const [currentPage, setCurrentPage] = useState(1);
+    const itemsPerPage = 100;
 
     const fetchData = useCallback(async () => {
         setLoading(true);
+        setCurrentPage(1); // Reset to page 1 when loading new data
         try {
             const res = await api.get(`/finance/profitability?start_date=${startDate}T00:00:00&end_date=${endDate}T23:59:59`);
             setOrders(res.data || []);
@@ -204,33 +208,78 @@ const OrderProfitability: React.FC = () => {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {filteredOrders.slice(0, 100).map((o, idx) => (
-                                        <tr key={idx}>
-                                            <td className="ps-4 text-muted">{o.date}</td>
-                                            <td>
-                                                <code className="small">{o.order_number?.substring(0, 15)}...</code>
-                                            </td>
-                                            <td>
-                                                <span className={`badge ${getPlatformBadge(o.platform)}`}>
-                                                    {o.platform}
-                                                </span>
-                                            </td>
-                                            <td>
-                                                <small className="text-muted">{o.items?.substring(0, 30)}...</small>
-                                            </td>
-                                            <td className="text-end text-success">{formatNumber(o.revenue)}</td>
-                                            <td className="text-end text-warning">{formatNumber(o.cogs)}</td>
-                                            <td className="text-end text-danger">{formatNumber(o.fees)}</td>
-                                            <td className={`text-end fw-bold ${o.net_profit >= 0 ? 'text-success' : 'text-danger'}`}>
-                                                {formatNumber(o.net_profit)}
-                                            </td>
-                                            <td className={`text-end pe-4 ${o.margin_percent >= 0 ? 'text-success' : 'text-danger'}`}>
-                                                {o.margin_percent.toFixed(1)}%
-                                            </td>
-                                        </tr>
-                                    ))}
+                                    {filteredOrders
+                                        .slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
+                                        .map((o, idx) => (
+                                            <tr key={idx}>
+                                                <td className="ps-4 text-muted">{o.date}</td>
+                                                <td>
+                                                    <code className="small">{o.order_number?.substring(0, 15)}...</code>
+                                                </td>
+                                                <td>
+                                                    <span className={`badge ${getPlatformBadge(o.platform)}`}>
+                                                        {o.platform}
+                                                    </span>
+                                                </td>
+                                                <td>
+                                                    <small className="text-muted">{o.items?.substring(0, 30)}...</small>
+                                                </td>
+                                                <td className="text-end text-success">{formatNumber(o.revenue)}</td>
+                                                <td className="text-end text-warning">{formatNumber(o.cogs)}</td>
+                                                <td className="text-end text-danger">
+                                                    {formatNumber(o.fees)}
+                                                    {o.fees_source === 'estimate' && (
+                                                        <span className="badge bg-secondary ms-1" style={{ fontSize: '0.6rem' }}>~</span>
+                                                    )}
+                                                </td>
+                                                <td className={`text-end fw-bold ${o.net_profit >= 0 ? 'text-success' : 'text-danger'}`}>
+                                                    {formatNumber(o.net_profit)}
+                                                </td>
+                                                <td className={`text-end pe-4 ${o.margin_percent >= 0 ? 'text-success' : 'text-danger'}`}>
+                                                    {o.margin_percent.toFixed(1)}%
+                                                </td>
+                                            </tr>
+                                        ))}
                                 </tbody>
                             </table>
+                        </div>
+                    )}
+
+                    {/* Pagination */}
+                    {filteredOrders.length > itemsPerPage && (
+                        <div className="card-footer bg-white d-flex justify-content-between align-items-center">
+                            <small className="text-muted">
+                                แสดง {((currentPage - 1) * itemsPerPage) + 1} - {Math.min(currentPage * itemsPerPage, filteredOrders.length)} จาก {filteredOrders.length} รายการ
+                            </small>
+                            <nav>
+                                <ul className="pagination pagination-sm mb-0">
+                                    <li className={`page-item ${currentPage === 1 ? 'disabled' : ''}`}>
+                                        <button className="page-link" onClick={() => setCurrentPage(1)}>
+                                            <i className="bi bi-chevron-double-left"></i>
+                                        </button>
+                                    </li>
+                                    <li className={`page-item ${currentPage === 1 ? 'disabled' : ''}`}>
+                                        <button className="page-link" onClick={() => setCurrentPage(p => Math.max(1, p - 1))}>
+                                            <i className="bi bi-chevron-left"></i>
+                                        </button>
+                                    </li>
+                                    <li className="page-item active">
+                                        <span className="page-link">
+                                            หน้า {currentPage} / {Math.ceil(filteredOrders.length / itemsPerPage)}
+                                        </span>
+                                    </li>
+                                    <li className={`page-item ${currentPage >= Math.ceil(filteredOrders.length / itemsPerPage) ? 'disabled' : ''}`}>
+                                        <button className="page-link" onClick={() => setCurrentPage(p => p + 1)}>
+                                            <i className="bi bi-chevron-right"></i>
+                                        </button>
+                                    </li>
+                                    <li className={`page-item ${currentPage >= Math.ceil(filteredOrders.length / itemsPerPage) ? 'disabled' : ''}`}>
+                                        <button className="page-link" onClick={() => setCurrentPage(Math.ceil(filteredOrders.length / itemsPerPage))}>
+                                            <i className="bi bi-chevron-double-right"></i>
+                                        </button>
+                                    </li>
+                                </ul>
+                            </nav>
                         </div>
                     )}
                 </div>

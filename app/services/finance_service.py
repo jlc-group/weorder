@@ -72,6 +72,7 @@ class FinanceService:
     @staticmethod
     def get_order_profitability(db: Session, start_date: datetime, end_date: datetime):
         from app.models import OrderHeader, OrderItem, Product
+        from app.models.finance import MarketplaceTransaction
         from sqlalchemy.orm import joinedload
         
         # ORM Query (SQLite Friendly)
@@ -80,7 +81,25 @@ class FinanceService:
         ).filter(
             OrderHeader.order_datetime >= start_date,
             OrderHeader.order_datetime <= end_date
-        ).order_by(desc(OrderHeader.order_datetime)).all()
+        ).order_by(desc(OrderHeader.order_datetime)).limit(2000).all()
+        
+        # Pre-fetch all fees for these orders in one query (batch)
+        order_ids = [o.id for o in orders]
+        
+        # Query actual fees from MarketplaceTransaction
+        fee_query = db.query(
+            MarketplaceTransaction.order_id,
+            func.sum(MarketplaceTransaction.amount).label("total_fees")
+        ).filter(
+            MarketplaceTransaction.order_id.in_(order_ids),
+            MarketplaceTransaction.transaction_type.in_([
+                'COMMISSION_FEE', 'SERVICE_FEE', 'TRANSACTION_FEE', 
+                'PAYMENT_FEE', 'SHIPPING_FEE'
+            ])
+        ).group_by(MarketplaceTransaction.order_id).all()
+        
+        # Create lookup map: order_id -> actual fees (negative values = deductions)
+        actual_fees_map = {str(order_id): float(total_fees or 0) for order_id, total_fees in fee_query}
 
         results = []
         for o in orders:
@@ -93,7 +112,7 @@ class FinanceService:
                 # Fallback to 0 if not found
                 cost = 0
                 if item.product:
-                    cost = float(item.product.standard_cost or item.product.cost_price or 0)
+                    cost = float(item.product.standard_cost or 0)
                 
                 qty = item.quantity or 0
                 item_cogs = cost * qty
@@ -101,23 +120,32 @@ class FinanceService:
                 
                 items_desc.append(f"{item.sku} x{qty}")
 
-            # Estimate Fees (Quick Logic)
-            est_fee_rate = 0.12 
             revenue = float(o.total_amount or 0)
-            fees = revenue * est_fee_rate
+            
+            # Get actual fees from MarketplaceTransaction if available
+            actual_fees = actual_fees_map.get(str(o.id))
+            if actual_fees is not None:
+                # actual_fees is typically negative (deductions), so we take abs value
+                fees = abs(actual_fees)
+                fees_source = "actual"
+            else:
+                # Fallback to estimate 12% if no transaction data
+                fees = revenue * 0.12
+                fees_source = "estimate"
             
             # Net Profit
             net_profit = revenue - fees - order_cogs
             margin = (net_profit / revenue * 100) if revenue > 0 else 0
 
             results.append({
-                "order_number": o.order_number or o.external_order_id,
+                "order_number": o.external_order_id,
                 "platform": o.channel_code,
                 "date": o.order_datetime.strftime('%Y-%m-%d') if o.order_datetime else "",
                 "items": ", ".join(items_desc),
                 "revenue": revenue,
                 "cogs": order_cogs,
                 "fees": fees,
+                "fees_source": fees_source,  # New field: "actual" or "estimate"
                 "net_profit": net_profit,
                 "margin_percent": margin
             })

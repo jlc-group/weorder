@@ -79,3 +79,8 @@ nohup.out
 sync_progress.json
 sync_status_report.txt
 .archive/
+verify_full_output.txt
+verify_output_full.txt
+full_sync_output.txt
+sync_cleanup_output.txt
+*.log

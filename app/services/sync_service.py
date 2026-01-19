@@ -109,13 +109,16 @@ class OrderSyncService:
                     platform_time_from = max_days_back
             
             # Determine status filters based on platform
-            # TikTok: NO filter - fetch all orders to get complete count
-            # Other platforms: filter for efficiency
             status_filters = []
             if config.platform == 'tiktok':
-                # Don't filter - let the API return all orders within time range
-                # Then we filter/count in DB for display
-                status_filters = [None]
+                # Restore Status Filters to fetch ONLY active orders but with WIDER time range
+                # We need to catch "stuck" orders created > 7 days ago
+                status_filters = ['AWAITING_SHIPMENT', 'UNPAID', 'ON_HOLD', 'AWAITING_COLLECTION', 'IN_TRANSIT']
+                
+                # Override time_from for TikTok to look back 60 days
+                # This is safe because we are filtering by status (low volume)
+                platform_time_from = datetime.utcnow() - timedelta(days=60)
+                
             elif config.platform == 'shopee':
                 status_filters = ['READY_TO_SHIP', 'PROCESSED']
             elif config.platform == 'lazada':

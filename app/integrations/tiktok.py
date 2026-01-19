@@ -299,7 +299,9 @@ class TikTokClient(BasePlatformClient):
                 pass
             body["create_time_lt"] = int(time_to.timestamp())
         if status:
-            body["order_status"] = status  # V2 uses string, not array
+            # V2 API typically prefers order_status_list for filtering
+            # Even if single status, send as list
+            body["order_status_list"] = [status]
         if cursor:
             params["page_token"] = cursor # API uses page_token, internal cursor
             # Also support cursor param if API expects it
@@ -319,6 +321,7 @@ class TikTokClient(BasePlatformClient):
                 "next_cursor": next_cursor,
                 "total": data.get("total_count", len(orders)),
                 "has_more": bool(next_cursor),
+                "more": bool(next_cursor),
             }
         except Exception as e:
             logger.error(f"Error fetching TikTok orders: {e}")

@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const api = axios.create({
-    baseURL: 'http://localhost:9202/api',
+    baseURL: '/api',  // Use relative path - works for both dev (via Vite proxy) and production
     timeout: 60000,
     headers: {
         'Content-Type': 'application/json',

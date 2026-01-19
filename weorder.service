@@ -1,0 +1,43 @@
+# =============================================================================
+# WeOrder Backend Systemd Service
+# =============================================================================
+#
+# การติดตั้ง:
+# 1. แก้ไข [CHANGE] ให้ตรงกับ server จริง
+# 2. sudo cp weorder.service /etc/systemd/system/
+# 3. sudo systemctl daemon-reload
+# 4. sudo systemctl enable weorder
+# 5. sudo systemctl start weorder
+#
+# คำสั่งที่ใช้บ่อย:
+#   sudo systemctl status weorder   # ดูสถานะ
+#   sudo systemctl restart weorder  # restart
+#   sudo journalctl -u weorder -f   # ดู logs
+#
+# =============================================================================
+
+[Unit]
+Description=WeOrder Backend API
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/weorder
+Environment="PATH=/var/www/weorder/.venv/bin"
+ExecStart=/var/www/weorder/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
