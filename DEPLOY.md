@@ -102,7 +102,7 @@ sudo journalctl -u weorder -f
 
 ```bash
 # เช็ค health
-curl http://localhost:9202/health
+curl http://localhost:9203/health
 
 # เช็คผ่าน nginx
 curl http://your-domain.com/health

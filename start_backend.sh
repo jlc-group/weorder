@@ -1,4 +1,4 @@
 #!/bin/bash
-# Force port 9202 to be used
-export APP_PORT=9202
-./.venv/bin/uvicorn main:app --port 9202 --host 0.0.0.0
+# Force port 9203 to be used
+export APP_PORT=9203
+./.venv/bin/uvicorn main:app --port 9203 --host 0.0.0.0

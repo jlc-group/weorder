@@ -27,7 +27,7 @@ pkill -9 -f "scheduler.py" 2>/dev/null
 pkill -9 -f "node.*weorder/frontend" 2>/dev/null
 
 # Kill processes by port if still running
-lsof -ti:9202 | xargs kill -9 2>/dev/null
+lsof -ti:9203 | xargs kill -9 2>/dev/null
 lsof -ti:5173 | xargs kill -9 2>/dev/null
 lsof -ti:5174 | xargs kill -9 2>/dev/null
 

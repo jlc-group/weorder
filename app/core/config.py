@@ -5,7 +5,7 @@ import os
 class Settings(BaseSettings):
     # Application
     APP_NAME: str = "WeOrder"
-    APP_PORT: int = 9202
+    APP_PORT: int = 9203
     DEBUG: bool = False  # Set to True only for development debugging
     SECRET_KEY: str = "weorder-secret-key-change-in-production"
     TIMEZONE: str = "Asia/Bangkok"

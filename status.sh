@@ -6,9 +6,9 @@ echo "📊 WeOrder Status"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Check Backend
-BACKEND_STATUS=$(curl -s http://localhost:9202/health -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+BACKEND_STATUS=$(curl -s http://localhost:9203/health -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
 if [ "$BACKEND_STATUS" = "200" ]; then
-    echo "✅ Backend:  Running (port 9202)"
+    echo "✅ Backend:  Running (port 9203)"
 else
     echo "❌ Backend:  Not running"
 fi

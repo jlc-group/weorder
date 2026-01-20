@@ -282,17 +282,16 @@ const Packing: React.FC = () => {
         }
     };
 
-    const addItemToBatch = (sku: string) => {
-        // Find product
-        const prod = products.find(p => p.sku === sku);
-        if (!prod) return;
-
-        setBatchItems([...batchItems, {
-            product_id: prod.id,
-            sku: prod.sku,
-            quantity: createBatchForm.quantity
-        }]);
-    };
+    // NOTE: addItemToBatch reserved for future use
+    // const addItemToBatch = (sku: string) => {
+    //     const prod = products.find(p => p.sku === sku);
+    //     if (!prod) return;
+    //     setBatchItems([...batchItems, {
+    //         product_id: prod.id,
+    //         sku: prod.sku,
+    //         quantity: createBatchForm.quantity
+    //     }]);
+    // };
 
     const removeBatchItem = (index: number) => {
         const newItems = [...batchItems];
@@ -445,7 +444,7 @@ const Packing: React.FC = () => {
         setIsPrinting(true);
         try {
             const ids = ordersToPrint.map(o => o.id).join(',');
-            window.open(`http://localhost:9202/api/orders/batch-labels?ids=${ids}&format=pdf`, '_blank');
+            window.open(`http://localhost:9203/api/orders/batch-labels?ids=${ids}&format=pdf`, '_blank');
         } catch (e) {
             console.error('Print failed:', e);
         } finally {
@@ -495,7 +494,7 @@ const Packing: React.FC = () => {
 
         setIsPrinting(true);
         try {
-            let url = 'http://localhost:9202/api/orders/batch-labels?format=pdf';
+            let url = 'http://localhost:9203/api/orders/batch-labels?format=pdf';
             if (selectAllMatching) {
                 // Use filters
                 url += '&filter_status=PAID,PACKING';
@@ -566,7 +565,7 @@ const Packing: React.FC = () => {
             return;
         }
         const ids = Array.from(selectedForPrint).join(',');
-        window.open(`http://localhost:9202/api/orders/pick-list?ids=${ids}`, '_blank');
+        window.open(`http://localhost:9203/api/orders/pick-list?ids=${ids}`, '_blank');
     };
 
     const printThermalSummary = () => {
@@ -576,7 +575,7 @@ const Packing: React.FC = () => {
             return;
         }
         const ids = Array.from(selectedForPrint).join(',');
-        window.open(`http://localhost:9202/api/orders/sku-summary-thermal?ids=${ids}`, '_blank');
+        window.open(`http://localhost:9203/api/orders/sku-summary-thermal?ids=${ids}`, '_blank');
     };
 
     // Batch mark all selected as packed

@@ -41,10 +41,10 @@ kill <PID>
 
 ```bash
 # Health check
-curl -s http://localhost:9202/health
+curl -s http://localhost:9203/health
 
 # Test dashboard API (should return in <5 seconds)
-curl -s -m 10 "http://localhost:9202/api/dashboard/stats?start_date=2026-01-01&end_date=2026-01-17" | head -c 200
+curl -s -m 10 "http://localhost:9203/api/dashboard/stats?start_date=2026-01-01&end_date=2026-01-17" | head -c 200
 ```
 
 ## Root Cause Summary

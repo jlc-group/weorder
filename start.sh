@@ -13,8 +13,8 @@ echo "🚀 Starting WeOrder..."
 sleep 2
 
 # Start Backend
-echo "📦 Starting Backend (port 9202)..."
-nohup .venv/bin/uvicorn main:app --port 9202 > /tmp/weorder-backend.log 2>&1 &
+echo "📦 Starting Backend (port 9203)..."
+nohup .venv/bin/uvicorn main:app --port 9203 > /tmp/weorder-backend.log 2>&1 &
 BACKEND_PID=$!
 echo $BACKEND_PID > /tmp/weorder-backend.pid
 echo "   Backend PID: $BACKEND_PID"
@@ -42,13 +42,13 @@ echo "⏳ Waiting for services..."
 sleep 8
 
 # Check status
-BACKEND_STATUS=$(curl -s http://localhost:9202/health -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+BACKEND_STATUS=$(curl -s http://localhost:9203/health -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
 FRONTEND_STATUS=$(curl -s http://localhost:5173 -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 if [ "$BACKEND_STATUS" = "200" ]; then
-    echo "✅ Backend:  http://localhost:9202"
+    echo "✅ Backend:  http://localhost:9203"
 else
     echo "⏳ Backend:  Starting... (check /tmp/weorder-backend.log)"
 fi

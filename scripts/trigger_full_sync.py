@@ -3,7 +3,7 @@ import urllib.parse
 import json
 import time
 
-base_url = "http://localhost:9202/api"
+base_url = "http://localhost:9203/api"
 
 def trigger_post(endpoint, params=None):
     url = f"{base_url}{endpoint}"

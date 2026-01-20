@@ -261,7 +261,7 @@ const InvoiceManager: React.FC = () => {
                                                         <span className="badge bg-success mb-1">{req.invoice_number}</span>
                                                         <div className="small text-muted">{req.invoice_date}</div>
                                                         <a
-                                                            href={`http://localhost:9202/api/orders/${req.order_id}/tax-invoice`}
+                                                            href={`http://localhost:9203/api/orders/${req.order_id}/tax-invoice`}
                                                             target="_blank"
                                                             rel="noopener noreferrer"
                                                             className="btn btn-sm btn-outline-primary d-block mt-1"

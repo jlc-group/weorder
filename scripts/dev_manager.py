@@ -11,7 +11,7 @@ import signal
 import psutil
 
 # Configuration
-BACKEND_PORT = 9202
+BACKEND_PORT = 9203
 FRONTEND_PORT = 5173
 # Use the standard .venv
 BACKEND_CMD = [".venv/bin/uvicorn", "main:app", "--reload", "--port", str(BACKEND_PORT)] 

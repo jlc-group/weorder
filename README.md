@@ -17,7 +17,7 @@
 - **Database**: PostgreSQL
 - **ORM**: SQLAlchemy 2.0
 - **Templates**: Jinja2 + Bootstrap 5
-- **Port**: 9202
+- **Port**: 9203
 
 ## Project Structure
 
@@ -61,7 +61,7 @@ python main.py
 
 Or with uvicorn:
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 9202 --reload
+uvicorn main:app --host 0.0.0.0 --port 9203 --reload
 ```
 
 ## PM2 Deployment
@@ -74,10 +74,10 @@ pm2 save
 
 ## URLs
 
-- **Local**: http://localhost:9202
+- **Local**: http://localhost:9203
 - **Production**: https://weorder.jlcgroup.co
-- **API Docs**: http://localhost:9202/docs
-- **Health Check**: http://localhost:9202/health
+- **API Docs**: http://localhost:9203/docs
+- **Health Check**: http://localhost:9203/health
 
 ## Related Folders
 
