@@ -11,6 +11,9 @@ import asyncio
 
 logger = logging.getLogger(__name__)
 
+# Final statuses that should NOT be re-synced (performance optimization)
+FINAL_STATUSES = ["DELIVERED", "CANCELLED", "RETURNED", "COMPLETED"]
+
 from app.models.integration import PlatformConfig, SyncJob
 from app.models.order import OrderHeader, OrderItem
 # Check if company model import is needed, usually assuming it's available or importing it
@@ -111,13 +114,12 @@ class OrderSyncService:
             # Determine status filters based on platform
             status_filters = []
             if config.platform == 'tiktok':
-                # Restore Status Filters to fetch ONLY active orders but with WIDER time range
-                # We need to catch "stuck" orders created > 7 days ago
+                # Fetch ONLY active orders (not yet shipped/delivered)
                 status_filters = ['AWAITING_SHIPMENT', 'UNPAID', 'ON_HOLD', 'AWAITING_COLLECTION', 'IN_TRANSIT']
                 
-                # Override time_from for TikTok to look back 60 days
-                # This is safe because we are filtering by status (low volume)
-                platform_time_from = datetime.utcnow() - timedelta(days=60)
+                # Use 3 days lookback (same as scheduler config)
+                # This is safe because we filter by active statuses only
+                platform_time_from = datetime.utcnow() - timedelta(days=3)
                 
             elif config.platform == 'shopee':
                 status_filters = ['READY_TO_SHIP', 'PROCESSED']
@@ -281,6 +283,13 @@ class OrderSyncService:
         ).first()
         
         if existing:
+            # OPTIMIZATION: Skip update if order is in final status and incoming status is also final
+            # This prevents unnecessary DB writes for completed orders
+            if existing.status_normalized in FINAL_STATUSES:
+                if normalized.status_normalized in FINAL_STATUSES:
+                    # Both are final, no need to update
+                    return (False, False)
+            
             # Update existing order
             return self._update_order(existing, normalized)
         else:

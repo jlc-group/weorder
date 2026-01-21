@@ -140,12 +140,17 @@ async def lazada_webhook(
         data = payload.get("data", {})
         
         # Handle order events
-        if message_type in ["ORDER_CREATED", "ORDER_STATUS_CHANGED"]:
+        # Lazada message_type can be:
+        # - 0: order status update (paid, pending, etc.)
+        # - "ORDER_CREATED", "ORDER_STATUS_CHANGED": legacy string types
+        order_event_types = ["ORDER_CREATED", "ORDER_STATUS_CHANGED", 0, "0"]
+        
+        if message_type in order_event_types or str(message_type) in ["0"]:
             order_id = str(data.get("trade_order_id", ""))
             if order_id:
                 background_tasks.add_task(
                     process_order_webhook,
-                    db, "lazada", order_id, message_type, str(webhook_log.id)
+                    db, "lazada", order_id, str(message_type), str(webhook_log.id)
                 )
         
         return {"success": True}

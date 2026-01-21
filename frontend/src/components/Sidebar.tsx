@@ -56,6 +56,9 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                     <NavLink to="/packing" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
                         <i className="bi bi-box2"></i>แพ็คสินค้า
                     </NavLink>
+                    <NavLink to="/pending-labels" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
+                        <i className="bi bi-printer"></i>ใบปะหน้าค้าง
+                    </NavLink>
                     <NavLink to="/promotions" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
                         <i className="bi bi-gift"></i>โปรโมชั่น
                     </NavLink>

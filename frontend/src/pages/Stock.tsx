@@ -29,6 +29,10 @@ const Stock: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
 
+    // Movements date filter state
+    const [movementsStartDate, setMovementsStartDate] = useState(new Date().toISOString().split('T')[0]);
+    const [movementsEndDate, setMovementsEndDate] = useState(new Date().toISOString().split('T')[0]);
+
     // Daily Outbound state
     const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
     const [outboundData, setOutboundData] = useState<OutboundData | null>(null);
@@ -50,14 +54,19 @@ const Stock: React.FC = () => {
     const fetchMovements = useCallback(async () => {
         setLoading(true);
         try {
-            const res = await api.get('/stock/movements');
+            const res = await api.get('/stock/movements', {
+                params: {
+                    start_date: movementsStartDate,
+                    end_date: movementsEndDate
+                }
+            });
             setMovements(res.data);
         } catch (error) {
             console.error(error);
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [movementsStartDate, movementsEndDate]);
 
     // Fetch daily outbound
     const fetchOutbound = useCallback(async () => {
@@ -347,27 +356,58 @@ const Stock: React.FC = () => {
                         )}
 
                         {activeTab === 'movements' && (
-                            <table className="table table-hover align-middle mb-0">
-                                <thead className="bg-light">
-                                    <tr>
-                                        <th className="ps-4">Date</th>
-                                        <th>Type</th>
-                                        <th>SKU</th>
-                                        <th className="text-end pe-4">Qty</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {movements.map((m) => (
-                                        <tr key={m.id}>
-                                            <td className="ps-4">{new Date(m.created_at).toLocaleString()}</td>
-                                            <td><span className={`badge bg-${m.movement_type === 'IN' ? 'success' : 'danger'}`}>{m.movement_type}</span></td>
-                                            <td>{m.sku}</td>
-                                            <td className="text-end pe-4 font-monospace">{m.quantity > 0 ? '+' : ''}{m.quantity}</td>
+                            <>
+                                {/* Date Filter for Movements */}
+                                <div className="p-3 bg-light border-bottom">
+                                    <div className="row g-2 align-items-end">
+                                        <div className="col-auto">
+                                            <label className="form-label small mb-1">จากวันที่</label>
+                                            <input
+                                                type="date"
+                                                className="form-control form-control-sm"
+                                                value={movementsStartDate}
+                                                onChange={(e) => setMovementsStartDate(e.target.value)}
+                                            />
+                                        </div>
+                                        <div className="col-auto">
+                                            <label className="form-label small mb-1">ถึงวันที่</label>
+                                            <input
+                                                type="date"
+                                                className="form-control form-control-sm"
+                                                value={movementsEndDate}
+                                                onChange={(e) => setMovementsEndDate(e.target.value)}
+                                            />
+                                        </div>
+                                        <div className="col-auto">
+                                            <button className="btn btn-primary btn-sm" onClick={fetchMovements} disabled={loading}>
+                                                <i className={`bi ${loading ? 'bi-arrow-repeat spin' : 'bi-search'} me-1`}></i>
+                                                โหลดข้อมูล
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <table className="table table-hover align-middle mb-0">
+                                    <thead className="bg-light">
+                                        <tr>
+                                            <th className="ps-4">Date</th>
+                                            <th>Type</th>
+                                            <th>SKU</th>
+                                            <th className="text-end pe-4">Qty</th>
                                         </tr>
-                                    ))}
-                                    {movements.length === 0 && !loading && <tr><td colSpan={4} className="text-center py-4">No movement history</td></tr>}
-                                </tbody>
-                            </table>
+                                    </thead>
+                                    <tbody>
+                                        {movements.map((m) => (
+                                            <tr key={m.id}>
+                                                <td className="ps-4">{new Date(m.created_at).toLocaleString()}</td>
+                                                <td><span className={`badge bg-${m.movement_type === 'IN' ? 'success' : 'danger'}`}>{m.movement_type}</span></td>
+                                                <td>{m.sku}</td>
+                                                <td className="text-end pe-4 font-monospace">{m.quantity > 0 ? '+' : ''}{m.quantity}</td>
+                                            </tr>
+                                        ))}
+                                        {movements.length === 0 && !loading && <tr><td colSpan={4} className="text-center py-4">ไม่พบ movements ในช่วงเวลานี้</td></tr>}
+                                    </tbody>
+                                </table>
+                            </>
                         )}
                     </div>
                 </div>

@@ -15,6 +15,7 @@ from .integration import PlatformConfig, SyncJob, WebhookLog
 from .mapping import PlatformListing, PlatformListingItem
 from .sync_log import SyncLog, SyncStatus
 from .label_log import LabelPrintLog
+from .manifest import Manifest, ManifestItem, ManifestStatus
 
 __all__ = [
     # Base
@@ -51,5 +52,7 @@ __all__ = [
     "SyncLog", "SyncStatus",
     # Label
     "LabelPrintLog",
+    # Manifest
+    "Manifest", "ManifestItem", "ManifestStatus",
 ]
 

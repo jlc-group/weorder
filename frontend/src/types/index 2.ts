@@ -25,8 +25,6 @@ export interface Order {
     shipping_fee?: number;
     payment_method?: string;
     order_updated_at?: string;
-    tracking_number?: string;
-    rts_time?: string;
     items: OrderItem[];
 }
 

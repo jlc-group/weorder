@@ -155,9 +155,11 @@ class StockService:
         db: Session,
         warehouse_id: Optional[UUID] = None,
         movement_type: Optional[str] = None,
-        limit: int = 50
+        limit: int = 50,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
     ) -> List[StockLedger]:
-        """Get recent stock movements"""
+        """Get recent stock movements with optional date filter"""
         query = db.query(StockLedger)
         
         if warehouse_id:
@@ -165,6 +167,12 @@ class StockService:
         
         if movement_type:
             query = query.filter(StockLedger.movement_type == movement_type)
+        
+        if start_date:
+            query = query.filter(StockLedger.created_at >= start_date)
+        
+        if end_date:
+            query = query.filter(StockLedger.created_at <= end_date)
         
         return query.order_by(StockLedger.created_at.desc()).limit(limit).all()
 

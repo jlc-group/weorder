@@ -41,10 +41,19 @@ async def reprocess_webhooks(limit: int = 500):
             if webhook.platform not in platforms:
                 platforms[webhook.platform] = []
             
-            # Extract order_id from payload
+            # Extract order_id from payload - different for each platform
             payload = webhook.payload or {}
             data = payload.get("data", {})
-            order_id = data.get("order_id") or payload.get("order_id")
+            
+            order_id = None
+            if webhook.platform == "tiktok":
+                order_id = data.get("order_id") or payload.get("order_id")
+            elif webhook.platform == "lazada":
+                order_id = str(data.get("trade_order_id", "")) or payload.get("order_id")
+            elif webhook.platform == "shopee":
+                order_id = data.get("ordersn") or payload.get("ordersn") or payload.get("order_id")
+            else:
+                order_id = data.get("order_id") or payload.get("order_id")
             
             if order_id:
                 platforms[webhook.platform].append({

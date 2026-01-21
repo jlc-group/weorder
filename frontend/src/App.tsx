@@ -9,6 +9,7 @@ import Products from './pages/Products';
 import PlatformBundles from './pages/PlatformBundles';
 import Stock from './pages/Stock';
 import Packing from './pages/Packing';
+import PendingLabels from './pages/PendingLabels';
 import Promotions from './pages/Promotions';
 import Finance from './pages/Finance';
 import FinancePerformance from './pages/FinancePerformance';
@@ -86,6 +87,7 @@ function AppRoutes() {
       <Route path="/bundles" element={<ProtectedRoute><PlatformBundles /></ProtectedRoute>} />
       <Route path="/stock" element={<ProtectedRoute><Stock /></ProtectedRoute>} />
       <Route path="/packing" element={<ProtectedRoute><Packing /></ProtectedRoute>} />
+      <Route path="/pending-labels" element={<ProtectedRoute><PendingLabels /></ProtectedRoute>} />
       <Route path="/returns" element={<ProtectedRoute><Returns /></ProtectedRoute>} />
       <Route path="/promotions" element={<ProtectedRoute><Promotions /></ProtectedRoute>} />
       <Route path="/finance" element={<ProtectedRoute><Finance /></ProtectedRoute>} />

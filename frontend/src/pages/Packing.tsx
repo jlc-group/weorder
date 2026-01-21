@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Layout from '../components/Layout';
+import PrintQueue from '../components/PrintQueue';
 import api from '../api/client';
 import type { Order } from '../types';
 
@@ -20,14 +21,22 @@ const Packing: React.FC = () => {
     const [rtsLoading, setRtsLoading] = useState(false);
     const [selectedForPrint, setSelectedForPrint] = useState<Set<string>>(new Set());
     const [prepackBoxes, setPrepackBoxes] = useState<PrepackBox[]>([]);
-    const [activeTab, setActiveTab] = useState<'queue' | 'prepack'>('queue');
+    const [activeTab, setActiveTab] = useState<'new_orders' | 'in_process' | 'to_pickup' | 'prepack'>('new_orders');
     const [showPrintModal, setShowPrintModal] = useState(false);
     const [printContent, setPrintContent] = useState('');
     const [isPrinting, setIsPrinting] = useState(false);
 
+    // BigSeller-style status counts for tabs
+    const [statusCounts, setStatusCounts] = useState({
+        new_orders: 0,      // PAID
+        in_process: 0,      // PACKING
+        to_pickup: 0,       // READY_TO_SHIP
+        total: 0
+    });
+
     // Pre-pack Batch Creation State
     const [showCreateBatchModal, setShowCreateBatchModal] = useState(false);
-    const [products, setProducts] = useState<any[]>([]);
+    const [products, setProducts] = useState<{ id: string; sku: string; name: string }[]>([]);
     const [createBatchForm, setCreateBatchForm] = useState({
         warehouse_id: 'baafef76-1300-410e-862d-052485c29215', // Default dummy for now, should be select
         sku: '',
@@ -63,6 +72,20 @@ const Packing: React.FC = () => {
     // Sync state
     const [isSyncing, setIsSyncing] = useState(false);
     const [syncStatus, setSyncStatus] = useState<string | null>(null);
+
+    // Print Queue state
+    const [showPrintQueue, setShowPrintQueue] = useState(false);
+
+    // Load status counts for BigSeller-style tabs
+    const loadStatusCounts = async () => {
+        try {
+            const params = selectedPlatform !== 'ALL' ? { channel: selectedPlatform } : {};
+            const { data } = await api.get('/orders/status-counts', { params });
+            setStatusCounts(data);
+        } catch (e) {
+            console.error('Failed to load status counts:', e);
+        }
+    };
 
     // Trigger sync from platforms
     const triggerPlatformSync = async () => {
@@ -109,9 +132,9 @@ const Packing: React.FC = () => {
             // Start polling after 3 seconds
             setTimeout(checkStatus, 3000);
 
-        } catch (e: any) {
+        } catch (e: unknown) {
             console.error('Sync failed:', e);
-            setSyncStatus('❌ Sync ล้มเหลว: ' + (e.response?.data?.detail || e.message));
+            setSyncStatus('❌ Sync ล้มเหลว: ' + ((e as Error).message || 'Unknown error'));
             setIsSyncing(false);
         }
     };
@@ -121,7 +144,7 @@ const Packing: React.FC = () => {
     // Pending Collection state (printed but not picked up)
     const [pendingCollectionCount, setPendingCollectionCount] = useState(0);
     const [showPendingModal, setShowPendingModal] = useState(false);
-    const [pendingOrders, setPendingOrders] = useState<any[]>([]);
+    const [pendingOrders, setPendingOrders] = useState<Order[]>([]);
     const [loadingPending, setLoadingPending] = useState(false);
 
     const loadPendingCollectionCount = async () => {
@@ -154,14 +177,22 @@ const Packing: React.FC = () => {
     useEffect(() => {
         loadQueue();
         loadPrepackBoxes();
-        // Initial load of summary
         loadSkuSummary();
         loadPendingCollectionCount();
+        loadStatusCounts();
     }, []);
+
+    // Reload when activeTab changes
+    useEffect(() => {
+        if (activeTab !== 'prepack') {
+            loadQueue(1);
+        }
+    }, [activeTab]);
 
     // Reload summary when platform/search changes (but not when pagination changes)
     useEffect(() => {
         loadSkuSummary();
+        loadStatusCounts();
     }, [selectedPlatform, searchQuery]);
 
     // Reload orders when SKU+Qty filter changes
@@ -172,11 +203,21 @@ const Packing: React.FC = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedSkuQty]);
 
+    // Get status filter based on active tab
+    const getStatusForTab = () => {
+        switch (activeTab) {
+            case 'new_orders': return 'PAID';
+            case 'in_process': return 'PACKING';
+            case 'to_pickup': return 'READY_TO_SHIP';
+            default: return 'PAID,PACKING,READY_TO_SHIP';
+        }
+    };
+
     const loadQueue = async (pageNum = 1) => {
-        // ... (existing loadQueue logic)
         setLoading(true);
         try {
-            let url = `/orders?status=PAID,PACKING,READY_TO_SHIP&per_page=${ORDERS_PER_PAGE}&page=${pageNum}`;
+            const statusFilter = getStatusForTab();
+            let url = `/orders?status=${statusFilter}&per_page=${ORDERS_PER_PAGE}&page=${pageNum}`;
             if (selectedPlatform !== 'ALL') {
                 url += `&channel=${selectedPlatform}`;
             }
@@ -274,9 +315,9 @@ const Packing: React.FC = () => {
             alert('สร้างกล่อง Pre-pack สำเร็จ');
             setShowCreateBatchModal(false);
             loadPrepackBoxes(); // Refresh list
-        } catch (e: any) {
+        } catch (e: unknown) {
             console.error('Failed to create batch:', e);
-            alert('เกิดข้อผิดพลาด: ' + (e.response?.data?.detail || e.message));
+            alert('เกิดข้อผิดพลาด: ' + ((e as Error).message || 'Unknown error'));
         } finally {
             setIsCreatingBatch(false);
         }
@@ -568,6 +609,7 @@ const Packing: React.FC = () => {
         window.open(`http://localhost:9203/api/orders/pick-list?ids=${ids}`, '_blank');
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const printThermalSummary = () => {
         if (!hasSelection) return;
         if (selectAllMatching) {
@@ -579,6 +621,7 @@ const Packing: React.FC = () => {
     };
 
     // Batch mark all selected as packed
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const markAllPacked = async () => {
         if (!hasSelection) return;
 
@@ -588,7 +631,7 @@ const Packing: React.FC = () => {
 
         setLoading(true);
         try {
-            const payload: any = { status: 'PACKING' };
+            const payload: Record<string, string | string[]> = { status: 'PACKING' };
 
             if (selectAllMatching && selectedSkus.size === 0) {
                 // Use Filters
@@ -631,7 +674,7 @@ const Packing: React.FC = () => {
 
         setRtsLoading(true);
         try {
-            const payload: any = {};
+            const payload: Record<string, string | string[]> = {};
             if (selectAllMatching && selectedSkus.size === 0) {
                 // Fetch IDs first if using filters? 
                 // Our backend endpoint expects IDs. 
@@ -708,13 +751,123 @@ const Packing: React.FC = () => {
             } else {
                 alert(`เกิดข้อผิดพลาด: ${data.message}`);
             }
-        } catch (e: any) {
+        } catch (e: unknown) {
             console.error('RTS failed:', e);
-            alert('เกิดข้อผิดพลาดในการเชื่อมต่อ: ' + (e.response?.data?.message || e.message));
+            alert('เกิดข้อผิดพลาดในการเชื่อมต่อ: ' + ((e as Error).message || 'Unknown error'));
         } finally {
             setRtsLoading(false);
         }
     };
+
+    // ============ BigSeller-Style Actions ============
+
+    // Pack: Move PAID → PACKING
+    const handlePack = async () => {
+        if (!hasSelection) return;
+
+        const count = selectedForPrint.size;
+        const confirmed = window.confirm(`ต้องการ Pack ${count} orders?\n\n(ย้ายจาก New Orders → In Process)`);
+        if (!confirmed) return;
+
+        setLoading(true);
+        try {
+            const { data } = await api.post('/orders/pack', { ids: Array.from(selectedForPrint) });
+            if (data.success) {
+                alert(data.message);
+                loadQueue(1);
+                loadStatusCounts();
+                setSelectedForPrint(new Set());
+            }
+        } catch (e: unknown) {
+            console.error('Pack failed:', e);
+            alert('เกิดข้อผิดพลาด');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // Ship: Call Platform API + Move PACKING → READY_TO_SHIP
+    const handleShip = async () => {
+        if (!hasSelection) return;
+
+        const count = selectedForPrint.size;
+        const confirmed = window.confirm(
+            `ต้องการ Ship ${count} orders?\n\n` +
+            `• ระบบจะเรียก Arrange Shipment กับ Platform\n` +
+            `• ย้ายจาก In Process → To Pickup`
+        );
+        if (!confirmed) return;
+
+        setRtsLoading(true);
+        try {
+            const { data } = await api.post('/orders/ship', { ids: Array.from(selectedForPrint) });
+            if (data.success) {
+                alert(data.message);
+                loadQueue(1);
+                loadStatusCounts();
+                setSelectedForPrint(new Set());
+            }
+        } catch (e: unknown) {
+            console.error('Ship failed:', e);
+            alert('เกิดข้อผิดพลาด');
+        } finally {
+            setRtsLoading(false);
+        }
+    };
+
+    // Move to Shipped: Move RTS → SHIPPED (manual)
+    const handleMoveToShipped = async () => {
+        if (!hasSelection) return;
+
+        const count = selectedForPrint.size;
+        const confirmed = window.confirm(
+            `ต้องการ Move ${count} orders to Shipped?\n\n` +
+            `(ใช้เมื่อ Courier รับของไปแล้วแต่ระบบยังไม่ update)`
+        );
+        if (!confirmed) return;
+
+        setLoading(true);
+        try {
+            const { data } = await api.post('/orders/move-to-shipped', { ids: Array.from(selectedForPrint) });
+            if (data.success) {
+                alert(data.message);
+                loadQueue(1);
+                loadStatusCounts();
+                setSelectedForPrint(new Set());
+            }
+        } catch (e: unknown) {
+            console.error('Move to shipped failed:', e);
+            alert('เกิดข้อผิดพลาด');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // Add selected orders to print queue
+    const addToPrintQueue = async () => {
+        if (!hasSelection) return;
+
+        try {
+            const { data } = await api.post('/print-queue/add', {
+                order_ids: Array.from(selectedForPrint)
+            });
+            if (data.success) {
+                alert(data.message);
+                setShowPrintQueue(true);
+            }
+        } catch (e) {
+            console.error('Failed to add to print queue:', e);
+            alert('เกิดข้อผิดพลาด');
+        }
+    };
+
+    // Handle print all from queue
+    const handlePrintFromQueue = (orderIds: string[]) => {
+        if (orderIds.length === 0) return;
+        const idsParam = orderIds.join(',');
+        window.open(`/api/orders/batch-labels?format=pdf&ids=${idsParam}`, '_blank');
+    };
+
     const getChannelBadge = (channel: string) => {
         const colors: Record<string, string> = {
             'tiktok': 'bg-dark',
@@ -757,18 +910,43 @@ const Packing: React.FC = () => {
                     <button className="btn btn-outline-primary" onClick={() => loadQueue()} disabled={loading}>
                         <i className={`bi ${loading ? 'bi-arrow-repeat spin' : 'bi-arrow-clockwise'} me-1`}></i> รีเฟรช
                     </button>
+                    <button
+                        className="btn btn-outline-info"
+                        onClick={() => setShowPrintQueue(true)}
+                        title="เปิดคิวพิมพ์"
+                    >
+                        <i className="bi bi-printer me-1"></i> คิวพิมพ์
+                    </button>
                 </div>
             }
         >
-            {/* Tabs */}
+            {/* BigSeller-Style Tabs */}
             <ul className="nav nav-pills mb-3">
                 <li className="nav-item">
                     <button
-                        className={`nav-link ${activeTab === 'queue' ? 'active' : ''}`}
-                        onClick={() => setActiveTab('queue')}
+                        className={`nav-link ${activeTab === 'new_orders' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('new_orders')}
                     >
-                        <i className="bi bi-list-check me-1"></i> คิวแพ็คออเดอร์
-                        <span className="badge bg-warning text-dark ms-1">{orders.length}</span>
+                        <i className="bi bi-inbox me-1"></i> New Orders
+                        <span className="badge bg-warning text-dark ms-1">{statusCounts.new_orders}</span>
+                    </button>
+                </li>
+                <li className="nav-item">
+                    <button
+                        className={`nav-link ${activeTab === 'in_process' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('in_process')}
+                    >
+                        <i className="bi bi-box-seam me-1"></i> In Process
+                        <span className="badge bg-primary ms-1">{statusCounts.in_process}</span>
+                    </button>
+                </li>
+                <li className="nav-item">
+                    <button
+                        className={`nav-link ${activeTab === 'to_pickup' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('to_pickup')}
+                    >
+                        <i className="bi bi-truck me-1"></i> To Pickup
+                        <span className="badge bg-success ms-1">{statusCounts.to_pickup}</span>
                     </button>
                 </li>
                 <li className="nav-item">
@@ -776,13 +954,13 @@ const Packing: React.FC = () => {
                         className={`nav-link ${activeTab === 'prepack' ? 'active' : ''}`}
                         onClick={() => setActiveTab('prepack')}
                     >
-                        <i className="bi bi-box2 me-1"></i> กล่อง Pre-pack
+                        <i className="bi bi-box2 me-1"></i> Pre-pack
                     </button>
                 </li>
             </ul>
 
             {/* Progress Summary Cards */}
-            {activeTab === 'queue' && (
+            {activeTab !== 'prepack' && (
                 <div className="row g-3 mb-4">
                     <div className="col-6 col-md-3">
                         <div className="card border-0 shadow-sm h-100 bg-warning bg-opacity-10">
@@ -893,8 +1071,8 @@ const Packing: React.FC = () => {
                 </div>
             )}
 
-            {/* Packing Queue Tab */}
-            {activeTab === 'queue' && (
+            {/* Packing Queue Tab - Show for all order tabs */}
+            {activeTab !== 'prepack' && (
                 <div className="card border-0 shadow-sm">
                     {/* Search & Filter Bar */}
                     <div className="card-header bg-white py-3">
@@ -1357,34 +1535,74 @@ const Packing: React.FC = () => {
                                         <span>รายการที่เลือก</span>
                                     </div>
                                     <div className="d-flex gap-2 flex-wrap">
+                                        {/* BigSeller-Style Actions based on tab */}
+                                        {activeTab === 'new_orders' && (
+                                            <button
+                                                className="btn btn-primary"
+                                                onClick={handlePack}
+                                            >
+                                                <i className="bi bi-box me-1"></i>
+                                                Pack ({selectedForPrint.size})
+                                            </button>
+                                        )}
+
+                                        {activeTab === 'in_process' && (
+                                            <>
+                                                <button
+                                                    className="btn btn-light"
+                                                    onClick={printSelected}
+                                                    disabled={isPrinting}
+                                                >
+                                                    <i className="bi bi-printer me-1"></i>
+                                                    พิมพ์ใบปะหน้า
+                                                </button>
+                                                <button
+                                                    className="btn btn-info text-white"
+                                                    onClick={printPickList}
+                                                >
+                                                    <i className="bi bi-list-check me-1"></i>
+                                                    พิมพ์ใบสรุป
+                                                </button>
+                                                <button
+                                                    className="btn btn-success"
+                                                    onClick={handleShip}
+                                                    disabled={rtsLoading}
+                                                >
+                                                    <i className="bi bi-truck me-1"></i>
+                                                    Ship ({selectedForPrint.size})
+                                                </button>
+                                            </>
+                                        )}
+
+                                        {activeTab === 'to_pickup' && (
+                                            <>
+                                                <button
+                                                    className="btn btn-light"
+                                                    onClick={printSelected}
+                                                    disabled={isPrinting}
+                                                >
+                                                    <i className="bi bi-printer me-1"></i>
+                                                    พิมพ์ใบปะหน้า
+                                                </button>
+                                                <button
+                                                    className="btn btn-success"
+                                                    onClick={handleMoveToShipped}
+                                                >
+                                                    <i className="bi bi-check-all me-1"></i>
+                                                    Move to Shipped
+                                                </button>
+                                            </>
+                                        )}
+
                                         <button
-                                            className="btn btn-light"
-                                            onClick={printSelected}
-                                            disabled={isPrinting}
+                                            className="btn btn-info"
+                                            onClick={addToPrintQueue}
+                                            title="เพิ่มเข้าคิวพิมพ์"
                                         >
-                                            พิมพ์ใบปะหน้า
+                                            <i className="bi bi-plus-circle me-1"></i>
+                                            เพิ่มเข้าคิว
                                         </button>
-                                        <button
-                                            className="btn btn-info text-white"
-                                            onClick={printPickList}
-                                        >
-                                            <i className="bi bi-list-check me-1"></i>
-                                            พิมพ์ใบสรุป
-                                        </button>
-                                        <button
-                                            className="btn btn-secondary text-white"
-                                            onClick={printThermalSummary}
-                                        >
-                                            <i className="bi bi-receipt me-1"></i>
-                                            พิมพ์ใบสรุป (Thermal)
-                                        </button>
-                                        <button
-                                            className="btn btn-success"
-                                            onClick={markAllPacked}
-                                        >
-                                            <i className="bi bi-check-all me-1"></i>
-                                            แพ็คเสร็จทั้งหมด
-                                        </button>
+
                                         <button
                                             className="btn btn-outline-light"
                                             onClick={() => setSelectedForPrint(new Set())}
@@ -1631,6 +1849,13 @@ const Packing: React.FC = () => {
                     }
                 }
             `}</style>
+
+            {/* Print Queue Drawer */}
+            <PrintQueue
+                isOpen={showPrintQueue}
+                onClose={() => setShowPrintQueue(false)}
+                onPrintAll={handlePrintFromQueue}
+            />
         </Layout>
     );
 };

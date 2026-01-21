@@ -65,6 +65,9 @@ class RoleResponse(RoleBase):
 class AssignRolesRequest(BaseModel):
     role_ids: List[str]
 
+class PasswordReset(BaseModel):
+    new_password: str
+
 # Department schemas
 class DepartmentBase(BaseModel):
     code: str
@@ -242,6 +245,29 @@ def assign_roles(user_id: str, request: AssignRolesRequest, db: Session = Depend
     
     db.commit()
     return {"message": "Roles assigned"}
+
+@router.put("/{user_id}/reset-password")
+def reset_password(user_id: str, data: PasswordReset, db: Session = Depends(get_db)):
+    """Reset password for a user (Super Admin only)"""
+    from app.api.auth import get_password_hash
+    
+    try:
+        uid = uuid.UUID(user_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+    
+    db_user = db.query(AppUser).filter(AppUser.id == uid).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not data.new_password or len(data.new_password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+    
+    # Hash and update password
+    db_user.hashed_password = get_password_hash(data.new_password)
+    db.commit()
+    
+    return {"message": f"Password reset successfully for user {db_user.username}"}
 
 # ============== Roles Endpoints ==============
 

@@ -11,6 +11,7 @@ from pypdf import PdfWriter, PdfReader
 
 from app.services import OrderService, integration_service
 from app.models import OrderHeader
+from app.integrations import TikTokClient
 
 logger = logging.getLogger(__name__)
 

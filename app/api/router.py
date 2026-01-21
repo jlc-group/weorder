@@ -32,6 +32,8 @@ from app.api.product_set import router as product_set_router
 from app.api.endpoints import listings as listings_router
 from app.api.users import router as users_router, roles_router, departments_router
 from app.api.auth import router as auth_router
+from app.api.print_queue_router import print_queue_router
+from app.api.manifest_router import manifest_router
 
 api_router = APIRouter(tags=["API"])
 
@@ -48,6 +50,8 @@ api_router.include_router(listings_router.router, prefix="/listings", tags=["lis
 api_router.include_router(users_router)
 api_router.include_router(roles_router)
 api_router.include_router(departments_router)
+api_router.include_router(print_queue_router)
+api_router.include_router(manifest_router)
 
 from app.api.sync import router as sync_router
 api_router.include_router(sync_router)
@@ -248,6 +252,114 @@ def get_pending_collection_orders(
         "per_page": per_page
     }
 
+
+# ============ BigSeller-Style Workflow APIs ============
+
+@api_router.get("/orders/status-counts")
+def get_status_counts(
+    channel: Optional[str] = Query(None, description="Filter by platform"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get order counts by status for BigSeller-style tabs.
+    Returns counts for: new_orders (PAID), in_process (PACKING), to_pickup (RTS)
+    """
+    from sqlalchemy import func
+    
+    query = db.query(
+        OrderHeader.status_normalized,
+        func.count(OrderHeader.id).label('count')
+    )
+    
+    if channel and channel.lower() != 'all':
+        query = query.filter(OrderHeader.channel_code.ilike(channel))
+    
+    counts = query.filter(
+        OrderHeader.status_normalized.in_(["PAID", "PACKING", "READY_TO_SHIP"])
+    ).group_by(OrderHeader.status_normalized).all()
+    
+    result = {
+        "new_orders": 0,      # PAID
+        "in_process": 0,      # PACKING  
+        "to_pickup": 0,       # READY_TO_SHIP
+        "total": 0
+    }
+    
+    for status, count in counts:
+        if status == "PAID":
+            result["new_orders"] = count
+        elif status == "PACKING":
+            result["in_process"] = count
+        elif status == "READY_TO_SHIP":
+            result["to_pickup"] = count
+        result["total"] += count
+    
+    return result
+
+@api_router.post("/orders/pack")
+def pack_orders(data: dict, db: Session = Depends(get_db)):
+    """
+    BigSeller-style Pack action.
+    Moves orders from PAID → PACKING status.
+    """
+    ids = data.get("ids", [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="No order IDs provided")
+    
+    count, message = OrderService.batch_update_status(
+        db,
+        new_status="PACKING",
+        order_ids=ids
+    )
+    
+    return {
+        "success": True,
+        "count": count,
+        "message": f"Packed {count} orders (moved to In Process)"
+    }
+
+@api_router.post("/orders/ship")
+async def ship_orders(data: dict, db: Session = Depends(get_db)):
+    """
+    BigSeller-style Ship action.
+    Calls platform Arrange Shipment API, then moves to READY_TO_SHIP.
+    """
+    ids = data.get("ids", [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="No order IDs provided")
+    
+    # Call the existing arrange-shipment logic
+    success_count, results = await OrderService.batch_arrange_shipment(db, ids)
+    
+    return {
+        "success": True,
+        "count": success_count,
+        "results": results,
+        "message": f"Shipped {success_count} orders (moved to To Pickup)"
+    }
+
+@api_router.post("/orders/move-to-shipped")
+def move_to_shipped(data: dict, db: Session = Depends(get_db)):
+    """
+    BigSeller-style manual 'Move to Shipped' action.
+    Moves orders from READY_TO_SHIP → SHIPPED status.
+    Used when courier has picked up but system hasn't auto-updated.
+    """
+    ids = data.get("ids", [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="No order IDs provided")
+    
+    count, message = OrderService.batch_update_status(
+        db,
+        new_status="SHIPPED",
+        order_ids=ids
+    )
+    
+    return {
+        "success": True,
+        "count": count,
+        "message": f"Moved {count} orders to Shipped"
+    }
 
 @api_router.post("/orders/batch-status")
 def batch_update_status(data: dict, db: Session = Depends(get_db)):
@@ -475,6 +587,124 @@ async def get_batch_labels(
     """
     
     return HTMLResponse(content=page_html)
+
+@api_router.get("/orders/pending-labels")
+def get_pending_labels(
+    platform: Optional[str] = Query(None, description="Filter by platform"),
+    limit: int = Query(100, description="Max results to return"),
+    include_shipped: bool = Query(False, description="Include SHIPPED orders"),
+    include_processing: bool = Query(False, description="Include PAID/PACKING orders (not printable yet)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get orders that are READY_TO_SHIP but haven't been printed yet.
+    BigSeller-style: Only shows orders that CAN be printed (RTS status).
+    
+    Options:
+    - include_shipped=true: Also show SHIPPED/IN_TRANSIT orders
+    - include_processing=true: Also show PAID/PACKING orders (warning: can't print these)
+    """
+    from app.models import LabelPrintLog
+    
+    # BigSeller default: Only READY_TO_SHIP (orders that can actually be printed)
+    statuses = ["READY_TO_SHIP"]
+    
+    if include_processing:
+        statuses = ["PAID", "PACKING"] + statuses
+    
+    if include_shipped:
+        statuses = statuses + ["SHIPPED", "IN_TRANSIT"]
+    
+    # Use LEFT JOIN for performance
+    query = db.query(OrderHeader).outerjoin(
+        LabelPrintLog, OrderHeader.id == LabelPrintLog.order_id
+    ).filter(
+        OrderHeader.status_normalized.in_(statuses),
+        LabelPrintLog.id == None  # Orders without print log
+    )
+    
+    if platform and platform.lower() != "all":
+        query = query.filter(OrderHeader.channel_code.ilike(platform))
+    
+    total_count = query.count()
+    orders = query.order_by(OrderHeader.created_at.asc()).limit(min(limit, 500)).all()
+    
+    return {
+        "count": total_count,
+        "showing": len(orders),
+        "include_shipped": include_shipped,
+        "orders": [
+            {
+                "id": str(order.id),
+                "external_order_id": order.external_order_id,
+                "channel_code": order.channel_code,
+                "status_normalized": order.status_normalized,
+                "customer_name": order.customer_name,
+                "created_at": order.created_at.isoformat() if order.created_at else None,
+                "total_amount": float(order.total_amount) if order.total_amount else 0,
+                "item_count": len(order.items) if order.items else 0
+            }
+            for order in orders
+        ]
+    }
+
+@api_router.post("/orders/mark-printed")
+def mark_orders_as_printed(
+    order_ids: List[str],
+    db: Session = Depends(get_db)
+):
+    """
+    Mark orders as printed without actually printing.
+    Used for orders printed from platform directly or legacy orders.
+    BigSeller-style 'Mark as Printed' feature.
+    """
+    from app.models import LabelPrintLog
+    from datetime import datetime
+    
+    marked_count = 0
+    skipped_count = 0
+    
+    for order_id_str in order_ids:
+        try:
+            order_uuid = UUID(order_id_str)
+            
+            # Check if already has print log
+            existing = db.query(LabelPrintLog).filter(
+                LabelPrintLog.order_id == order_uuid
+            ).first()
+            
+            if existing:
+                skipped_count += 1
+                continue
+            
+            # Get order details
+            order = db.query(OrderHeader).filter(OrderHeader.id == order_uuid).first()
+            if not order:
+                continue
+            
+            # Create print log entry
+            log_entry = LabelPrintLog(
+                order_id=order_uuid,
+                external_order_id=order.external_order_id,
+                platform=order.channel_code,
+                printed_at=datetime.now(),
+                printed_by=None,  # Manual mark
+                note="Marked as printed (not printed via system)"
+            )
+            db.add(log_entry)
+            marked_count += 1
+            
+        except Exception as e:
+            continue
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "marked": marked_count,
+        "skipped": skipped_count,
+        "message": f"Marked {marked_count} orders as printed, skipped {skipped_count} (already printed)"
+    }
 
 @api_router.get("/orders/pick-list")
 def get_pick_list(
@@ -1015,11 +1245,32 @@ def stock_summary(
 def stock_movements(
     warehouse_id: Optional[str] = Query(None),
     movement_type: Optional[str] = Query(None),
-    limit: int = Query(50),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    limit: int = Query(100),
     db: Session = Depends(get_db)
 ):
+    from datetime import datetime, time
+    
     wh_id = UUID(warehouse_id) if warehouse_id else None
-    movements = StockService.get_recent_movements(db, wh_id, movement_type, limit)
+    
+    # Parse dates
+    start_dt = None
+    end_dt = None
+    if start_date:
+        try:
+            start_dt = datetime.combine(datetime.strptime(start_date, "%Y-%m-%d"), time.min)
+        except:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.combine(datetime.strptime(end_date, "%Y-%m-%d"), time.max)
+        except:
+            pass
+    
+    movements = StockService.get_recent_movements(
+        db, wh_id, movement_type, limit, start_dt, end_dt
+    )
     
     return [
         {
