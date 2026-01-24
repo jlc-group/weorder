@@ -1,11 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api/client';
 import Layout from '../components/Layout';
 import type { Order } from '../types';
 import { Modal, Button, Form } from 'react-bootstrap';
 import Swal from 'sweetalert2';
-import { useCallback } from 'react';
 
 interface ReturnItemDraft {
     sku: string;
@@ -16,8 +15,21 @@ interface ReturnItemDraft {
     reason: string;
 }
 
+// Standard return reasons (BigSeller-style)
+const RETURN_REASONS = [
+    'ลูกค้าเปลี่ยนใจ',
+    'สินค้าไม่ตรงตามรูป/คำอธิบาย',
+    'สินค้าเสียหาย/ชำรุด',
+    'ส่งผิดสินค้า/สี/ขนาด',
+    'สินค้าไม่ครบ',
+    'สินค้าหมดอายุ',
+    'ได้รับสินค้าช้าเกินไป',
+    'ปัญหาจากขนส่ง',
+    'อื่นๆ'
+];
+
 const CHANNELS = [
-    { code: 'all', label: 'ทั้งหมด', badge: '' },
+    { code: 'all', label: 'ทั้งหมด', badge: '', color: '' },
     { code: 'shopee', label: 'Shopee', badge: 'S', color: 'warning' },
     { code: 'lazada', label: 'Lazada', badge: 'L', color: 'primary' },
     { code: 'tiktok', label: 'TikTok', badge: 'T', color: 'dark' },
@@ -25,17 +37,34 @@ const CHANNELS = [
     { code: 'manual', label: 'Manual', badge: 'M', color: 'secondary' },
 ];
 
+// BigSeller-style status tabs
+const STATUS_TABS = [
+    { key: 'pending', label: 'รอรับคืน', statuses: 'TO_RETURN,RETURN_INITIATED', color: 'warning', icon: 'bi-hourglass-split' },
+    { key: 'received', label: 'รับคืนแล้ว', statuses: 'RETURNED', color: 'success', icon: 'bi-box-arrow-in-down' },
+    { key: 'failed', label: 'จัดส่งล้มเหลว', statuses: 'DELIVERY_FAILED', color: 'danger', icon: 'bi-x-circle' },
+    { key: 'all', label: 'ทั้งหมด', statuses: 'RETURNED,TO_RETURN,RETURN_INITIATED,DELIVERY_FAILED', color: 'secondary', icon: 'bi-list-ul' },
+];
+
 const Returns: React.FC = () => {
     const [orders, setOrders] = useState<Order[]>([]);
     const [loading, setLoading] = useState<boolean>(true);
     const [error, setError] = useState<string | null>(null);
 
+    // Status counts for tabs
+    const [statusCounts, setStatusCounts] = useState({
+        pending: 0,
+        received: 0,
+        failed: 0,
+        all: 0
+    });
+
     // Filters
+    const [activeStatusTab, setActiveStatusTab] = useState('pending');
     const [channel, setChannel] = useState('all');
     const [search, setSearch] = useState('');
     const [startDate, setStartDate] = useState(() => {
         const d = new Date();
-        d.setMonth(d.getMonth() - 1); // Default last month for returns
+        d.setMonth(d.getMonth() - 1);
         return d.toISOString().split('T')[0];
     });
     const [endDate, setEndDate] = useState(() => {
@@ -46,6 +75,9 @@ const Returns: React.FC = () => {
     const [total, setTotal] = useState(0);
     const [perPage] = useState(20);
 
+    // Bulk selection
+    const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
+
     // Return Modal State
     const [showReturnModal, setShowReturnModal] = useState(false);
     const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
@@ -53,13 +85,41 @@ const Returns: React.FC = () => {
     const [returnNote, setReturnNote] = useState('');
     const [submitting, setSubmitting] = useState(false);
 
+    // Load status counts
+    const loadStatusCounts = useCallback(async () => {
+        try {
+            const params = new URLSearchParams();
+            if (channel !== 'all') params.set('channel', channel);
+            if (startDate) params.set('start_date', startDate);
+            if (endDate) params.set('end_date', endDate);
+
+            // Load counts for each status group
+            const [pendingRes, receivedRes, failedRes] = await Promise.all([
+                api.get(`/orders?status=TO_RETURN,RETURN_INITIATED&per_page=1&${params}`),
+                api.get(`/orders?status=RETURNED&per_page=1&${params}`),
+                api.get(`/orders?status=DELIVERY_FAILED&per_page=1&${params}`)
+            ]);
+
+            setStatusCounts({
+                pending: pendingRes.data.total || 0,
+                received: receivedRes.data.total || 0,
+                failed: failedRes.data.total || 0,
+                all: (pendingRes.data.total || 0) + (receivedRes.data.total || 0) + (failedRes.data.total || 0)
+            });
+        } catch (e) {
+            console.error('Failed to load status counts:', e);
+        }
+    }, [channel, startDate, endDate]);
+
     const fetchOrders = useCallback(async () => {
         setLoading(true);
         try {
+            const currentTab = STATUS_TABS.find(t => t.key === activeStatusTab);
             const params = new URLSearchParams({
                 page: page.toString(),
                 per_page: perPage.toString(),
-                status: 'RETURNED,TO_RETURN,RETURN_INITIATED,DELIVERY_FAILED',
+                status: currentTab?.statuses || 'RETURNED,TO_RETURN,RETURN_INITIATED,DELIVERY_FAILED',
+                date_field: 'returned_at',  // Filter by returned_at date, not order_datetime
             });
             if (channel !== 'all') params.set('channel', channel);
             if (search) params.set('search', search);
@@ -80,11 +140,17 @@ const Returns: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    }, [page, perPage, channel, search, startDate, endDate]);
+    }, [page, perPage, channel, search, startDate, endDate, activeStatusTab]);
 
     useEffect(() => {
         fetchOrders();
-    }, [fetchOrders]);
+        loadStatusCounts();
+    }, [fetchOrders, loadStatusCounts]);
+
+    // Reset selection when filters change
+    useEffect(() => {
+        setSelectedOrders(new Set());
+    }, [activeStatusTab, channel, search, page]);
 
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault();
@@ -94,13 +160,18 @@ const Returns: React.FC = () => {
 
     const getStatusBadge = (status: string) => {
         const classes: Record<string, string> = {
-            'RETURNED': 'bg-danger',
+            'RETURNED': 'bg-success',
             'TO_RETURN': 'bg-warning text-dark',
             'RETURN_INITIATED': 'bg-warning text-dark',
             'DELIVERY_FAILED': 'bg-danger',
-            'COMPLETED': 'bg-success', // Refunded?
         };
-        return <span className={`badge ${classes[status] || 'bg-secondary'}`}>{status}</span>;
+        const labels: Record<string, string> = {
+            'RETURNED': 'รับคืนแล้ว',
+            'TO_RETURN': 'รอคืน',
+            'RETURN_INITIATED': 'เริ่มคืน',
+            'DELIVERY_FAILED': 'ส่งล้มเหลว',
+        };
+        return <span className={`badge ${classes[status] || 'bg-secondary'}`}>{labels[status] || status}</span>;
     };
 
     const getChannelBadge = (channelCode: string) => {
@@ -111,6 +182,65 @@ const Returns: React.FC = () => {
 
     const totalPages = Math.ceil(total / perPage);
 
+    // Bulk selection handlers
+    const toggleSelectOrder = (orderId: string) => {
+        const newSet = new Set(selectedOrders);
+        if (newSet.has(orderId)) {
+            newSet.delete(orderId);
+        } else {
+            newSet.add(orderId);
+        }
+        setSelectedOrders(newSet);
+    };
+
+    const toggleSelectAll = (checked: boolean) => {
+        if (checked) {
+            setSelectedOrders(new Set(orders.map(o => o.id)));
+        } else {
+            setSelectedOrders(new Set());
+        }
+    };
+
+    // Bulk mark as received
+    const handleBulkMarkReceived = async () => {
+        if (selectedOrders.size === 0) return;
+
+        const confirmed = await Swal.fire({
+            title: 'ยืนยันการรับคืน',
+            text: `ต้องการเปลี่ยนสถานะ ${selectedOrders.size} รายการเป็น "รับคืนแล้ว"?`,
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonText: 'ยืนยัน',
+            cancelButtonText: 'ยกเลิก'
+        });
+
+        if (!confirmed.isConfirmed) return;
+
+        try {
+            await api.post('/orders/batch-status', {
+                ids: Array.from(selectedOrders),
+                status: 'RETURNED'
+            });
+            Swal.fire('สำเร็จ', 'อัพเดตสถานะเรียบร้อย', 'success');
+            setSelectedOrders(new Set());
+            fetchOrders();
+            loadStatusCounts();
+        } catch (err) {
+            Swal.fire('ผิดพลาด', 'ไม่สามารถอัพเดตสถานะได้', 'error');
+        }
+    };
+
+    // Export to Excel
+    const handleExport = () => {
+        const currentTab = STATUS_TABS.find(t => t.key === activeStatusTab);
+        let url = `http://localhost:9203/api/orders/export?status=${currentTab?.statuses || 'RETURNED,TO_RETURN,RETURN_INITIATED,DELIVERY_FAILED'}`;
+        if (channel !== 'all') url += `&channel=${channel}`;
+        if (startDate) url += `&start_date=${startDate}`;
+        if (endDate) url += `&end_date=${endDate}`;
+        if (search) url += `&search=${search}`;
+        window.open(url, '_blank');
+    };
+
     const handleOpenReturnModal = (order: Order) => {
         setSelectedOrder(order);
         setReturnItems((order.items || []).map(item => ({
@@ -119,7 +249,7 @@ const Returns: React.FC = () => {
             max_qty: item.quantity,
             quantity: 0,
             condition: 'GOOD',
-            reason: ''
+            reason: RETURN_REASONS[0]
         })));
         setReturnNote('');
         setShowReturnModal(true);
@@ -135,7 +265,6 @@ const Returns: React.FC = () => {
         if (!selectedOrder) return;
         setSubmitting(true);
         try {
-            // Filter only items with Quantity > 0
             const itemsToReturn = returnItems
                 .filter(i => i.quantity > 0)
                 .map(i => ({
@@ -146,7 +275,7 @@ const Returns: React.FC = () => {
                 }));
 
             if (itemsToReturn.length === 0) {
-                Swal.fire('Warning', 'Please select at least one item to return.', 'warning');
+                Swal.fire('Warning', 'กรุณาเลือกสินค้าอย่างน้อย 1 รายการ', 'warning');
                 setSubmitting(false);
                 return;
             }
@@ -156,12 +285,13 @@ const Returns: React.FC = () => {
                 note: returnNote
             });
 
-            Swal.fire('Success', 'Return processed successfully.', 'success');
+            Swal.fire('สำเร็จ', 'บันทึกการคืนสินค้าเรียบร้อย', 'success');
             setShowReturnModal(false);
-            fetchOrders(); // Refresh list
+            fetchOrders();
+            loadStatusCounts();
         } catch (err: unknown) {
             console.error("Return failed:", err);
-            const message = (err as any).response?.data?.detail || 'Failed to process return.';
+            const message = (err as { response?: { data?: { detail?: string } } }).response?.data?.detail || 'Failed to process return.';
             Swal.fire('Error', message, 'error');
         } finally {
             setSubmitting(false);
@@ -176,26 +306,74 @@ const Returns: React.FC = () => {
         <Layout
             title="สินค้าตีคืน (Returns)"
             breadcrumb={breadcrumb}
+            actions={
+                <div className="d-flex gap-2">
+                    <button className="btn btn-outline-success" onClick={handleExport} title="Export to Excel">
+                        <i className="bi bi-file-earmark-excel me-1"></i>Export
+                    </button>
+                    <button className="btn btn-outline-primary" onClick={() => { fetchOrders(); loadStatusCounts(); }} disabled={loading}>
+                        <i className={`bi ${loading ? 'bi-arrow-repeat spin' : 'bi-arrow-clockwise'} me-1`}></i>รีเฟรช
+                    </button>
+                </div>
+            }
         >
             {error && <div className="alert alert-danger">{error}</div>}
+
+            {/* Summary Cards */}
+            <div className="row g-3 mb-4">
+                {STATUS_TABS.filter(t => t.key !== 'all').map(tab => (
+                    <div className="col-md-4" key={tab.key}>
+                        <div
+                            className={`card border-0 shadow-sm h-100 cursor-pointer ${activeStatusTab === tab.key ? `border-${tab.color} border-2` : ''}`}
+                            onClick={() => { setActiveStatusTab(tab.key); setPage(1); }}
+                            style={{ cursor: 'pointer' }}
+                        >
+                            <div className="card-body text-center py-3">
+                                <i className={`bi ${tab.icon} fs-3 text-${tab.color}`}></i>
+                                <div className={`fs-2 fw-bold text-${tab.color}`}>
+                                    {statusCounts[tab.key as keyof typeof statusCounts]}
+                                </div>
+                                <div className="text-muted small">{tab.label}</div>
+                            </div>
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            {/* BigSeller-Style Status Tabs */}
+            <ul className="nav nav-tabs mb-3">
+                {STATUS_TABS.map(tab => (
+                    <li className="nav-item" key={tab.key}>
+                        <button
+                            className={`nav-link ${activeStatusTab === tab.key ? 'active' : ''}`}
+                            onClick={() => { setActiveStatusTab(tab.key); setPage(1); }}
+                        >
+                            <i className={`bi ${tab.icon} me-1`}></i>
+                            {tab.label}
+                            <span className={`badge bg-${tab.color} ms-1`}>
+                                {statusCounts[tab.key as keyof typeof statusCounts]}
+                            </span>
+                        </button>
+                    </li>
+                ))}
+            </ul>
 
             {/* Filters */}
             <div className="card mb-3 border-0 shadow-sm">
                 <div className="card-body py-2">
-                    {/* Channel Tabs */}
-                    <ul className="nav nav-pills nav-fill mb-3">
+                    {/* Channel Pills */}
+                    <div className="d-flex flex-wrap gap-2 mb-3">
                         {CHANNELS.map(ch => (
-                            <li className="nav-item" key={ch.code}>
-                                <button
-                                    className={`nav-link ${channel === ch.code ? 'active' : ''}`}
-                                    onClick={() => { setChannel(ch.code); setPage(1); }}
-                                >
-                                    {ch.badge && <span className={`badge bg-${ch.color} me-1`}>{ch.badge}</span>}
-                                    {ch.label}
-                                </button>
-                            </li>
+                            <button
+                                key={ch.code}
+                                className={`btn btn-sm ${channel === ch.code ? 'btn-primary' : 'btn-outline-secondary'}`}
+                                onClick={() => { setChannel(ch.code); setPage(1); }}
+                            >
+                                {ch.badge && <span className={`badge bg-${ch.color} me-1`}>{ch.badge}</span>}
+                                {ch.label}
+                            </button>
                         ))}
-                    </ul>
+                    </div>
 
                     {/* Search & Date Filters */}
                     <form onSubmit={handleSearch} className="row g-2 align-items-center">
@@ -205,7 +383,6 @@ const Returns: React.FC = () => {
                                 className="form-control form-control-sm"
                                 value={startDate}
                                 onChange={(e) => { setStartDate(e.target.value); setPage(1); }}
-                                title="วันที่เริ่มต้น"
                             />
                         </div>
                         <div className="col-md-3">
@@ -214,7 +391,6 @@ const Returns: React.FC = () => {
                                 className="form-control form-control-sm"
                                 value={endDate}
                                 onChange={(e) => { setEndDate(e.target.value); setPage(1); }}
-                                title="วันที่สิ้นสุด"
                             />
                         </div>
                         <div className="col-md-4">
@@ -231,12 +407,27 @@ const Returns: React.FC = () => {
                         </div>
                         <div className="col-md-2">
                             <button type="submit" className="btn btn-primary btn-sm w-100">
-                                <i className="bi bi-filter me-1"></i> กรอง
+                                <i className="bi bi-filter me-1"></i>กรอง
                             </button>
                         </div>
                     </form>
                 </div>
             </div>
+
+            {/* Bulk Action Bar */}
+            {selectedOrders.size > 0 && (
+                <div className="alert alert-info d-flex justify-content-between align-items-center mb-3">
+                    <span><strong>{selectedOrders.size}</strong> รายการถูกเลือก</span>
+                    <div className="d-flex gap-2">
+                        <button className="btn btn-sm btn-success" onClick={handleBulkMarkReceived}>
+                            <i className="bi bi-check-circle me-1"></i>ยืนยันรับคืนแล้ว
+                        </button>
+                        <button className="btn btn-sm btn-outline-secondary" onClick={() => setSelectedOrders(new Set())}>
+                            ยกเลิกการเลือก
+                        </button>
+                    </div>
+                </div>
+            )}
 
             {/* Returns Table */}
             <div className="card border-0 shadow-sm">
@@ -245,35 +436,52 @@ const Returns: React.FC = () => {
                         <table className="table table-hover align-middle mb-0">
                             <thead className="bg-light">
                                 <tr>
-                                    <th className="ps-3 py-3">รหัสออเดอร์</th>
+                                    <th className="ps-3 py-3" style={{ width: '40px' }}>
+                                        <input
+                                            type="checkbox"
+                                            className="form-check-input"
+                                            checked={orders.length > 0 && selectedOrders.size === orders.length}
+                                            onChange={(e) => toggleSelectAll(e.target.checked)}
+                                        />
+                                    </th>
+                                    <th className="py-3">รหัสออเดอร์</th>
                                     <th className="py-3">ช่องทาง</th>
                                     <th className="py-3">ลูกค้า</th>
                                     <th className="py-3">รายการสินค้า</th>
                                     <th className="py-3 text-end">ยอดเงินคืน</th>
                                     <th className="py-3">สถานะ</th>
-                                    <th className="py-3">วันที่</th>
-                                    <th className="pe-3 py-3" style={{ width: '80px' }}></th>
+                                    <th className="py-3">วันที่สั่ง</th>
+                                    <th className="py-3">วันที่ตีกลับ</th>
+                                    <th className="pe-3 py-3" style={{ width: '100px' }}></th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {loading && orders.length === 0 ? (
                                     <tr>
-                                        <td colSpan={8} className="text-center py-5 text-muted">
+                                        <td colSpan={10} className="text-center py-5 text-muted">
                                             <div className="spinner-border text-primary"></div>
                                             <div className="mt-2">กำลังโหลด...</div>
                                         </td>
                                     </tr>
                                 ) : orders.length === 0 ? (
                                     <tr>
-                                        <td colSpan={8} className="text-center py-5 text-muted">
+                                        <td colSpan={10} className="text-center py-5 text-muted">
                                             <i className="bi bi-inbox fs-1 d-block mb-2"></i>
                                             ไม่พบรายการสินค้าตีคืน
                                         </td>
                                     </tr>
                                 ) : (
                                     orders.map((order) => (
-                                        <tr key={order.id}>
+                                        <tr key={order.id} className={selectedOrders.has(order.id) ? 'table-active' : ''}>
                                             <td className="ps-3">
+                                                <input
+                                                    type="checkbox"
+                                                    className="form-check-input"
+                                                    checked={selectedOrders.has(order.id)}
+                                                    onChange={() => toggleSelectOrder(order.id)}
+                                                />
+                                            </td>
+                                            <td>
                                                 <Link to={`/orders/${order.id}`} className="fw-semibold text-decoration-none">
                                                     {order.external_order_id || order.id.substring(0, 8)}
                                                 </Link>
@@ -284,11 +492,14 @@ const Returns: React.FC = () => {
                                                 <small className="text-muted">{order.customer_phone}</small>
                                             </td>
                                             <td>
-                                                {(order.items || []).map((item, i) => (
+                                                {(order.items || []).slice(0, 2).map((item, i) => (
                                                     <div key={i} className="small text-truncate" style={{ maxWidth: '200px' }}>
                                                         {item.sku} x {item.quantity}
                                                     </div>
                                                 ))}
+                                                {(order.items || []).length > 2 && (
+                                                    <small className="text-muted">+{order.items.length - 2} รายการ</small>
+                                                )}
                                             </td>
                                             <td className="text-end fw-bold text-danger">
                                                 ฿{order.total_amount.toLocaleString()}
@@ -298,9 +509,18 @@ const Returns: React.FC = () => {
                                                 <small>
                                                     {order.order_datetime
                                                         ? new Date(order.order_datetime).toLocaleDateString('th-TH')
-                                                        : new Date(order.created_at).toLocaleDateString('th-TH')
+                                                        : '-'
                                                     }
                                                 </small>
+                                            </td>
+                                            <td>
+                                                {(order as any).returned_at ? (
+                                                    <span className="badge bg-warning text-dark">
+                                                        {new Date((order as any).returned_at).toLocaleDateString('th-TH')}
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-muted">-</span>
+                                                )}
                                             </td>
                                             <td className="pe-3">
                                                 <Link to={`/orders/${order.id}`} className="btn btn-sm btn-outline-primary me-1" title="ดูรายละเอียด">
@@ -347,7 +567,6 @@ const Returns: React.FC = () => {
                 </div>
             </div>
 
-
             {/* Process Return Modal */}
             <Modal show={showReturnModal} onHide={() => setShowReturnModal(false)} size="lg">
                 <Modal.Header closeButton>
@@ -360,10 +579,10 @@ const Returns: React.FC = () => {
                             <thead className="bg-light">
                                 <tr>
                                     <th>สินค้า</th>
-                                    <th style={{ width: '100px' }}>จำนวนที่ซื้อ</th>
-                                    <th style={{ width: '100px' }}>จำนวนคืน</th>
-                                    <th style={{ width: '150px' }}>สภาพสินค้า</th>
-                                    <th>เหตุผล</th>
+                                    <th style={{ width: '80px' }}>ซื้อ</th>
+                                    <th style={{ width: '80px' }}>คืน</th>
+                                    <th style={{ width: '130px' }}>สภาพ</th>
+                                    <th style={{ width: '200px' }}>เหตุผล</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -392,18 +611,20 @@ const Returns: React.FC = () => {
                                                 disabled={item.quantity === 0}
                                             >
                                                 <option value="GOOD">ปกติ (Restock)</option>
-                                                <option value="DAMAGED">เสียหาย (Damaged)</option>
+                                                <option value="DAMAGED">เสียหาย</option>
                                             </select>
                                         </td>
                                         <td>
-                                            <input
-                                                type="text"
-                                                className="form-control form-control-sm"
-                                                placeholder="ระบุเหตุผล..."
+                                            <select
+                                                className="form-select form-select-sm"
                                                 value={item.reason}
                                                 onChange={(e) => handleReturnItemChange(index, 'reason', e.target.value)}
                                                 disabled={item.quantity === 0}
-                                            />
+                                            >
+                                                {RETURN_REASONS.map(reason => (
+                                                    <option key={reason} value={reason}>{reason}</option>
+                                                ))}
+                                            </select>
                                         </td>
                                     </tr>
                                 ))}

@@ -54,6 +54,13 @@ class OrderHeader(Base, UUIDMixin, TimestampMixin):
     delivery_time = Column(DateTime(timezone=True))
     collection_time = Column(DateTime(timezone=True))
     
+    # Return Tracking
+    returned_at = Column(DateTime(timezone=True))  # When items were returned to warehouse
+    return_reason = Column(String(50))  # DELIVERY_FAILED, CUSTOMER_RETURN, DAMAGED, WRONG_ITEM
+    return_verified = Column(Boolean, default=False)  # Has the return been verified?
+    return_verified_by = Column(UUID(as_uuid=True), ForeignKey("app_user.id"))  # Who verified
+    return_notes = Column(Text)  # Notes about the return (condition, missing items, etc.)
+    
     # Shipping Fee Details
     original_shipping_fee = Column(Numeric(12, 2), default=0)
     shipping_fee_platform_discount = Column(Numeric(12, 2), default=0)

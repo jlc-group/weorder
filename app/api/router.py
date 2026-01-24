@@ -14,7 +14,7 @@ from app.models import (
     StockLedger, Promotion, PromotionAction, PrepackBox, PaymentReceipt,
     PaymentAllocation
 )
-from app.services import OrderService, ProductService, StockService, PromotionService, integration_service
+from app.services import OrderService, ProductService, StockService, PromotionService, integration_service, ReplenishmentService
 from app.schemas.order import OrderCreate, OrderUpdate
 from app.schemas.product import ProductCreate, ProductUpdate
 from app.schemas.stock import StockMovementCreate
@@ -59,6 +59,19 @@ api_router.include_router(sync_router)
 from app.api.labels import router as labels_router
 api_router.include_router(labels_router)
 
+# ===================== REPLENISHMENT =====================
+
+@api_router.get("/stock/replenishment")
+def get_replenishment_plan(
+    days: int = Query(30, ge=7, le=90, description="Days to look back for velocity"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get Smart Reorder Suggestions.
+    Calculates sales velocity (avg daily sales) and suggests reorder qty.
+    """
+    return ReplenishmentService.get_replenishment_plan(db, days_lookback=days)
+
 
 
 # ===================== HEALTH & STATUS =====================
@@ -88,6 +101,7 @@ def list_orders(
     end_date: Optional[str] = Query(None),
     exclude_cancelled: bool = Query(False),
     sku_qty: Optional[str] = Query(None),  # Format: "L14-70G:2,L3-40G:1"
+    date_field: str = Query("order_datetime", description="Field to filter by: order_datetime or returned_at"),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=10000),
     db: Session = Depends(get_db)
@@ -100,7 +114,7 @@ def list_orders(
         )
     else:
         orders, total = OrderService.get_orders(
-            db, channel, status, search, start_date, end_date, page, per_page, exclude_cancelled
+            db, channel, status, search, start_date, end_date, page, per_page, exclude_cancelled, date_field
         )
     return {
         "orders": [
@@ -117,6 +131,8 @@ def list_orders(
                 "tracking_number": o.tracking_number or ((o.raw_payload or {}).get("packages") or [{}])[0].get("tracking_number") or "",
                 "order_datetime": o.order_datetime.isoformat() if o.order_datetime else None,
                 "created_at": o.created_at.isoformat() if o.created_at else None,
+                "returned_at": o.returned_at.isoformat() if o.returned_at else None,
+                "return_reason": o.return_reason,
                 "items": [
                     {
                         "id": str(item.id),
@@ -137,7 +153,6 @@ def list_orders(
         "per_page": per_page
     }
 
-    return HTMLResponse(content=page_html)
 
 @api_router.get("/orders/sku-summary")
 def get_sku_summary(
@@ -272,7 +287,7 @@ def get_status_counts(
     )
     
     if channel and channel.lower() != 'all':
-        query = query.filter(OrderHeader.channel_code.ilike(channel))
+        query = query.filter(OrderHeader.channel_code.ilike(f"%{channel}%"))
     
     counts = query.filter(
         OrderHeader.status_normalized.in_(["PAID", "PACKING", "READY_TO_SHIP"])
@@ -295,6 +310,62 @@ def get_status_counts(
         result["total"] += count
     
     return result
+
+
+@api_router.get("/orders/platform-summary")
+def get_platform_summary(db: Session = Depends(get_db)):
+    """
+    BigSeller-style platform summary.
+    Returns order counts by platform and status for the Packing page header.
+    """
+    from sqlalchemy import func, case
+    
+    # Query counts by platform and status
+    query = db.query(
+        OrderHeader.channel_code,
+        OrderHeader.status_normalized,
+        func.count(OrderHeader.id).label('count')
+    ).filter(
+        OrderHeader.status_normalized.in_(["PAID", "PACKING", "READY_TO_SHIP"])
+    ).group_by(
+        OrderHeader.channel_code,
+        OrderHeader.status_normalized
+    ).all()
+    
+    # Build result structure
+    platforms = {}
+    totals = {"new_orders": 0, "in_process": 0, "to_pickup": 0, "total": 0}
+    
+    for channel, status, count in query:
+        # Normalize platform name
+        platform = channel.lower() if channel else "unknown"
+        
+        if platform not in platforms:
+            platforms[platform] = {
+                "platform": platform,
+                "new_orders": 0,
+                "in_process": 0,
+                "to_pickup": 0,
+                "total": 0
+            }
+        
+        if status == "PAID":
+            platforms[platform]["new_orders"] += count
+            totals["new_orders"] += count
+        elif status == "PACKING":
+            platforms[platform]["in_process"] += count
+            totals["in_process"] += count
+        elif status == "READY_TO_SHIP":
+            platforms[platform]["to_pickup"] += count
+            totals["to_pickup"] += count
+        
+        platforms[platform]["total"] += count
+        totals["total"] += count
+    
+    return {
+        "platforms": list(platforms.values()),
+        "totals": totals
+    }
 
 @api_router.post("/orders/pack")
 def pack_orders(data: dict, db: Session = Depends(get_db)):
@@ -796,7 +867,63 @@ def get_pick_list(
     """
     return HTMLResponse(content=html)
 
-@api_router.get("/orders/sku-summary-thermal")
+
+@api_router.get("/orders/pick-list-summary")
+def get_pick_list_summary(
+    status: str = Query("PAID", description="Order status to aggregate"),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate Pick List summary with server-side aggregation.
+    Returns aggregated SKU counts for all orders matching the status.
+    Fast endpoint for mobile pick list.
+    """
+    from sqlalchemy import func
+    
+    # Aggregate directly in database - much faster than fetching all orders
+    query = db.query(
+        OrderItem.sku,
+        OrderItem.product_name,
+        func.sum(OrderItem.quantity).label('total_quantity'),
+        func.count(func.distinct(OrderItem.order_id)).label('order_count')
+    ).join(
+        OrderHeader, OrderItem.order_id == OrderHeader.id
+    ).filter(
+        OrderHeader.status_normalized == status,
+        OrderItem.sku.isnot(None),
+        OrderItem.sku != ''
+    ).group_by(
+        OrderItem.sku,
+        OrderItem.product_name
+    ).order_by(
+        func.sum(OrderItem.quantity).desc()
+    )
+    
+    results = query.all()
+    
+    # Get total order count
+    order_count = db.query(func.count(OrderHeader.id)).filter(
+        OrderHeader.status_normalized == status
+    ).scalar() or 0
+    
+    items = [
+        {
+            "sku": row.sku,
+            "product_name": row.product_name or "-",
+            "total_quantity": int(row.total_quantity),
+            "order_count": int(row.order_count)
+        }
+        for row in results
+    ]
+    
+    return {
+        "items": items,
+        "order_count": order_count,
+        "sku_count": len(items),
+        "status": status
+    }
+
+
 def sku_summary_thermal(ids: str, db: Session = Depends(get_db)):
     """
     Generate Thermal-Friendly SKU Summary (Shopping List)
@@ -1145,6 +1272,11 @@ def list_products(
     db: Session = Depends(get_db)
 ):
     products, total = ProductService.get_products(db, product_type, search, True, page, per_page)
+    
+    # Pre-fetch stock summary for all products
+    stock_summary = StockService.get_stock_summary(db)
+    stock_map = {s["sku"]: s for s in stock_summary}
+    
     return {
         "products": [
             {
@@ -1155,7 +1287,11 @@ def list_products(
                 "standard_cost": float(p.standard_cost or 0),
                 "standard_price": float(p.standard_price or 0),
                 "image_url": p.image_url,
-                "is_active": p.is_active
+                "is_active": p.is_active,
+                # Stock data from StockLedger
+                "on_hand": stock_map.get(p.sku, {}).get("on_hand", 0),
+                "reserved": stock_map.get(p.sku, {}).get("reserved", 0),
+                "stock_quantity": stock_map.get(p.sku, {}).get("available", 0)
             }
             for p in products
         ],
@@ -1302,6 +1438,165 @@ def add_stock_movement(data: dict, db: Session = Depends(get_db)):
     movement = StockService.add_stock_movement(db, movement_data)
     return {"id": str(movement.id)}
 
+
+@api_router.post("/stock/reset-to-zero")
+def reset_stock_to_zero(db: Session = Depends(get_db)):
+    """
+    Reset all negative stock to zero by adding IN movements.
+    This is a one-time fix for missing initial stock.
+    """
+    from sqlalchemy import func
+    
+    # Get current stock summary (products with negative stock)
+    summary = StockService.get_stock_summary(db)
+    
+    # Get default warehouse
+    warehouse = db.query(Warehouse).filter(Warehouse.is_active == True).first()
+    if not warehouse:
+        raise HTTPException(status_code=400, detail="No active warehouse found")
+    
+    fixed_count = 0
+    total_adjusted = 0
+    
+    for item in summary:
+        if item.get("on_hand", 0) < 0:
+            negative_qty = abs(item["on_hand"])
+            # Create IN movement to make stock zero
+            movement_data = StockMovementCreate(
+                warehouse_id=warehouse.id,
+                product_id=item["product_id"],  # Already UUID from summary
+                movement_type="IN",
+                quantity=negative_qty,
+                reference_type="STOCK_ADJUSTMENT",
+                note=f"Initial stock adjustment (auto-fix negative {negative_qty})"
+            )
+            StockService.add_stock_movement(db, movement_data)
+            fixed_count += 1
+            total_adjusted += negative_qty
+    
+    return {
+        "success": True,
+        "fixed_products": fixed_count,
+        "total_adjusted": total_adjusted,
+        "message": f"Reset {fixed_count} products from negative to zero, added {total_adjusted} units total"
+    }
+
+
+@api_router.get("/stock/card/{sku}")
+def get_stock_card(
+    sku: str,
+    warehouse_id: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    limit: int = Query(500, ge=1, le=2000),
+    db: Session = Depends(get_db)
+):
+    """
+    Stock Card - Get all movements for a specific SKU with running balance.
+    Returns chronological ledger for audit/verification.
+    """
+    from datetime import datetime, time
+    from app.models.stock import StockBalance, Location
+    
+    # Find product
+    product = db.query(Product).filter(Product.sku == sku).first()
+    if not product:
+        raise HTTPException(status_code=404, detail=f"Product with SKU '{sku}' not found")
+    
+    # Build query
+    query = db.query(StockLedger).filter(StockLedger.product_id == product.id)
+    
+    if warehouse_id:
+        query = query.filter(StockLedger.warehouse_id == UUID(warehouse_id))
+    
+    # Date filters
+    if start_date:
+        try:
+            dt_start = datetime.combine(datetime.strptime(start_date, "%Y-%m-%d"), time.min)
+            query = query.filter(StockLedger.created_at >= dt_start)
+        except:
+            pass
+    if end_date:
+        try:
+            dt_end = datetime.combine(datetime.strptime(end_date, "%Y-%m-%d"), time.max)
+            query = query.filter(StockLedger.created_at <= dt_end)
+        except:
+            pass
+    
+    # Get all movements ordered by date (oldest first for running balance)
+    movements = query.order_by(StockLedger.created_at.asc()).limit(limit).all()
+    
+    # Calculate running balance
+    running_balance = 0
+    records = []
+    for m in movements:
+        # Calculate effect on balance
+        if m.movement_type in ["IN", "RELEASE"]:
+            effect = m.quantity
+        elif m.movement_type in ["OUT", "RESERVE"]:
+            effect = -m.quantity
+        elif m.movement_type == "ADJUST":
+            effect = m.quantity
+        else:
+            effect = m.quantity
+        
+        running_balance += effect
+        
+        records.append({
+            "id": str(m.id),
+            "date": m.created_at.isoformat() if m.created_at else None,
+            "movement_type": m.movement_type,
+            "quantity": m.quantity,
+            "effect": effect,
+            "balance": running_balance,
+            "reference_type": m.reference_type,
+            "reference_id": m.reference_id,
+            "note": m.note
+        })
+    
+    # Reverse to show newest first in UI
+    records.reverse()
+    
+    # Get current summary (filtered by warehouse if provided)
+    stock_summary = StockService.get_stock_summary(db, warehouse_id=UUID(warehouse_id) if warehouse_id else None)
+    current = next((s for s in stock_summary if s["sku"] == sku), None)
+    
+    # Get Location Balances
+    location_balances = []
+    if warehouse_id:
+        balances = db.query(StockBalance).filter(
+            StockBalance.warehouse_id == UUID(warehouse_id),
+            StockBalance.product_id == product.id
+        ).all()
+        
+        for bal in balances:
+            loc_name = "Unassigned"
+            if bal.location_id:
+                loc = db.query(Location).filter(Location.id == bal.location_id).first()
+                if loc:
+                     loc_name = loc.name
+            
+            location_balances.append({
+                "location_name": loc_name,
+                "quantity": bal.quantity,
+                "reserved": bal.reserved_quantity,
+                "available": bal.quantity - bal.reserved_quantity
+            })
+
+    return {
+        "sku": sku,
+        "product_name": product.name,
+        "product_id": str(product.id),
+        "current_stock": {
+            "on_hand": current["on_hand"] if current else 0,
+            "reserved": current["reserved"] if current else 0,
+            "available": current["available"] if current else 0
+        },
+        "location_balances": location_balances,
+        "movements_count": len(records),
+        "movements": records
+    }
+
 # ===================== PROMOTIONS =====================
 
 @api_router.get("/promotions")
@@ -1419,3 +1714,41 @@ def create_payment(data: dict, db: Session = Depends(get_db)):
 def finance_summary(db: Session = Depends(get_db)):
     from app.services.finance_service import FinanceService
     return FinanceService.get_finance_summary(db)
+
+# ===================== WAREHOUSE & LOCATIONS =====================
+
+@api_router.get("/locations")
+def list_locations(
+    warehouse_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """List locations (bins/shelves)"""
+    if not warehouse_id:
+        return []
+    return StockService.get_locations(db, UUID(warehouse_id))
+
+@api_router.post("/locations")
+def create_location(
+    data: dict,
+    db: Session = Depends(get_db)
+):
+    """Create new location"""
+    # Validation logic here if needed
+    return StockService.create_location(db, data)
+
+@api_router.post("/stock/transfer")
+def transfer_stock(
+    data: dict,
+    db: Session = Depends(get_db)
+):
+    """Transfer stock between warehouses"""
+    user_id = UUID("00000000-0000-0000-0000-000000000000") # Placeholder for system/admin
+    success = StockService.transfer_stock(
+        db,
+        from_wh=UUID(data["from_warehouse_id"]),
+        to_wh=UUID(data["to_warehouse_id"]),
+        product_id=UUID(data["product_id"]),
+        qty=int(data["quantity"]),
+        user_id=user_id
+    )
+    return {"success": success}
