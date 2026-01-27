@@ -11,7 +11,7 @@ from pypdf import PdfWriter, PdfReader
 
 from app.services import OrderService, integration_service
 from app.models import OrderHeader
-from app.integrations import TikTokClient
+from app.integrations import TikTokClient, ShopeeClient, LazadaClient
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ class LabelService:
     async def generate_batch_labels(db: Session, order_ids: List[str]) -> bytes:
         """
         Generate a merged PDF of shipping labels for the given orders.
-        Currently supports TikTok official labels.
+        Supports: TikTok, Shopee, Lazada
         """
         merger = PdfWriter()
         client_cache = {}
@@ -40,36 +40,31 @@ class LabelService:
                         continue
                         
                     # Check platform
-                    # Map channel_code to platform. "tiktok" -> "tiktok"
                     platform = order.channel_code.lower()
                     
-                    if platform != "tiktok":
+                    # All platforms now supported
+                    if platform not in ["tiktok", "shopee", "lazada"]:
                         logger.warning(f"Official label not supported for platform {platform} (Order: {order.external_order_id})")
                         continue
                         
-                    # Get Client
-                    # We need to find the right config. For now, try to find active config for this platform.
-                    # Ideally, link order to shop_id.
+                    # Get Client (cached per platform)
                     if platform not in client_cache:
                         configs = integration_service.get_platform_configs(db, platform=platform, is_active=True)
                         if not configs:
                             logger.error(f"No active configuration found for {platform}")
                             continue
-                        # Use the first one for now (assuming single shop or check raw_payload)
                         config = configs[0] 
                         client_cache[platform] = integration_service.get_client_for_config(config)
                     
                     client = client_cache[platform]
-                    if not isinstance(client, TikTokClient):
-                        continue
-                        
-                    # Get Label URL
-                    # TikTokClient.get_shipping_label uses order.external_order_id (platform ID) or internal ID?
-                    # The get_shipping_label takes 'order_id' which typically means platform order ID.
-                    label_url = await client.get_shipping_label(order.external_order_id)
+                    
+                    # Get Label URL - all clients now have get_shipping_label method
+                    label_url = None
+                    if hasattr(client, 'get_shipping_label'):
+                        label_url = await client.get_shipping_label(order.external_order_id)
                     
                     if not label_url:
-                        logger.warning(f"No label URL returned for {order.external_order_id}")
+                        logger.warning(f"No label URL returned for {order.external_order_id} ({platform})")
                         continue
                         
                     # Download PDF
@@ -77,13 +72,12 @@ class LabelService:
                     pdf_content = None
                     while retry_count < 3:
                         try:
-                            # Use the http_client we opened
-                            response = await http_client.get(label_url, timeout=10.0)
+                            response = await http_client.get(label_url, timeout=15.0)
                             if response.status_code == 200:
                                 pdf_content = response.content
                                 break
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"Retry {retry_count+1} downloading label for {order.external_order_id}: {e}")
                         retry_count += 1
                         
                     if pdf_content:
@@ -114,3 +108,4 @@ class LabelService:
         output_stream.close()
         
         return msg_bytes
+

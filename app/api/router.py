@@ -28,6 +28,7 @@ from app.api.invoice_request import invoice_request_router
 from app.api.finance import finance_router
 from app.api.prepack import router as prepack_router
 from app.api.reporting import router as reporting_router
+from app.api.reconciliation import router as reconciliation_router
 from app.api.product_set import router as product_set_router
 from app.api.endpoints import listings as listings_router
 from app.api.users import router as users_router, roles_router, departments_router
@@ -45,6 +46,7 @@ api_router.include_router(invoice_request_router)
 api_router.include_router(finance_router)
 api_router.include_router(prepack_router)
 api_router.include_router(reporting_router)
+api_router.include_router(reconciliation_router)
 api_router.include_router(product_set_router)
 api_router.include_router(listings_router.router, prefix="/listings", tags=["listings"])
 api_router.include_router(users_router)
@@ -58,6 +60,15 @@ api_router.include_router(sync_router)
 
 from app.api.labels import router as labels_router
 api_router.include_router(labels_router)
+
+from app.api.packing import router as packing_router
+api_router.include_router(packing_router)
+
+from app.api.tiktok import router as tiktok_router
+api_router.include_router(tiktok_router, prefix="/tiktok", tags=["TikTok Affiliate"])
+
+from app.api.labels_courier import router as labels_courier_router
+api_router.include_router(labels_courier_router)
 
 # ===================== REPLENISHMENT =====================
 
@@ -91,6 +102,58 @@ def dashboard_stats(
     return OrderService.get_dashboard_stats(db, start_date=start_date, end_date=end_date)
 
 # ===================== ORDERS =====================
+
+@api_router.get("/orders/pick-list-summary")
+def get_pick_list_summary_fast(
+    status: str = Query("PAID", description="Order status to aggregate"),
+    db: Session = Depends(get_db)
+):
+    """
+    Fast Pick List summary with server-side aggregation.
+    Returns aggregated SKU counts for all orders matching the status.
+    """
+    from sqlalchemy import func
+    
+    query = db.query(
+        OrderItem.sku,
+        OrderItem.product_name,
+        func.sum(OrderItem.quantity).label('total_quantity'),
+        func.count(func.distinct(OrderItem.order_id)).label('order_count')
+    ).join(
+        OrderHeader, OrderItem.order_id == OrderHeader.id
+    ).filter(
+        OrderHeader.status_normalized == status,
+        OrderItem.sku.isnot(None),
+        OrderItem.sku != ''
+    ).group_by(
+        OrderItem.sku,
+        OrderItem.product_name
+    ).order_by(
+        func.sum(OrderItem.quantity).desc()
+    )
+    
+    results = query.all()
+    
+    order_count = db.query(func.count(OrderHeader.id)).filter(
+        OrderHeader.status_normalized == status
+    ).scalar() or 0
+    
+    items = [
+        {
+            "sku": row.sku,
+            "product_name": row.product_name or "-",
+            "total_quantity": int(row.total_quantity),
+            "order_count": int(row.order_count)
+        }
+        for row in results
+    ]
+    
+    return {
+        "items": items,
+        "order_count": order_count,
+        "sku_count": len(items),
+        "status": status
+    }
 
 @api_router.get("/orders")
 def list_orders(
@@ -504,6 +567,46 @@ def return_order(
         # Log error
         print(f"Return Error: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error processing return")
+
+@api_router.post("/orders/{order_id}/verify-return")
+def verify_return(
+    order_id: str,
+    data: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    Verify a returned order - mark as inspected by warehouse staff
+    Input: { "verified": true, "notes": "สินค้าสภาพดี" }
+    """
+    try:
+        order = OrderService.get_order_by_id(db, UUID(order_id))
+    except:
+        order = OrderService.get_order_by_external_id(db, order_id)
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Only allow verification for returned/delivery_failed orders
+    if order.status_normalized not in ['RETURNED', 'DELIVERY_FAILED', 'TO_RETURN']:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot verify return for order with status: {order.status_normalized}"
+        )
+    
+    # Update return verification fields
+    order.return_verified = data.get("verified", True)
+    order.return_notes = data.get("notes", "")
+    # TODO: Add return_verified_by when auth is implemented
+    # order.return_verified_by = current_user.id
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Return verification updated successfully",
+        "return_verified": order.return_verified,
+        "return_notes": order.return_notes
+    }
 
 # IMPORTANT: Static routes must come BEFORE dynamic routes
 @api_router.get("/orders/batch-labels")
@@ -924,6 +1027,7 @@ def get_pick_list_summary(
     }
 
 
+@api_router.get("/orders/sku-summary-thermal")
 def sku_summary_thermal(ids: str, db: Session = Depends(get_db)):
     """
     Generate Thermal-Friendly SKU Summary (Shopping List)
@@ -1086,6 +1190,11 @@ def get_order(order_id: str, db: Session = Depends(get_db)):
         "total_amount": float(order.total_amount or 0),
         "order_datetime": order.order_datetime.isoformat() if order.order_datetime else None,
         "created_at": order.created_at.isoformat() if order.created_at else None,
+        "returned_at": order.returned_at.isoformat() if order.returned_at else None,
+        "return_reason": order.return_reason,
+        "return_verified": order.return_verified,
+        "return_verified_by": str(order.return_verified_by) if order.return_verified_by else None,
+        "return_notes": order.return_notes,
         "raw_payload": order.raw_payload,
         "items": [
             {

@@ -22,9 +22,13 @@ python-dateutil>=2.8.2
 # QR Code for packing labels
 qrcode[pil]>=7.4.2
 
+# PDF Generation & Merging
+pypdf>=3.17.0
+
 # Platform Integrations
 httpx>=0.24.0
 apscheduler>=3.10.0
+schedule>=1.2.0
 
 # Authentication
 python-jose[cryptography]>=3.3.0

@@ -135,6 +135,63 @@ async def sync_finance():
         db.close()
 
 
+async def refresh_tokens():
+    """Refresh tokens for all platforms before they expire"""
+    from app.core.database import SessionLocal
+    from app.models.integration import PlatformConfig
+    from app.services import integration_service
+    
+    db = SessionLocal()
+    results = {}
+    
+    try:
+        configs = db.query(PlatformConfig).filter(
+            PlatformConfig.is_active == True,
+            PlatformConfig.sync_enabled == True
+        ).all()
+        
+        for config in configs:
+            try:
+                # Check if token expires in less than 2 hours
+                if config.token_expires_at:
+                    time_until_expiry = (config.token_expires_at - datetime.now()).total_seconds()
+                    if time_until_expiry > 7200:  # More than 2 hours left
+                        logger.info(f"  ⏭ {config.platform}: Token OK ({time_until_expiry/3600:.1f}h remaining)")
+                        continue
+                
+                # Refresh token
+                client = integration_service.get_client_for_config(config)
+                result = await client.refresh_access_token()
+                
+                # Update tokens in DB
+                config.access_token = result['access_token']
+                if result.get('refresh_token'):
+                    config.refresh_token = result['refresh_token']
+                expires_in = result.get('expires_in', 3600)
+                config.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+                db.commit()
+                
+                results[config.platform] = {'status': 'OK', 'expires_in': expires_in}
+                logger.info(f"  ✓ {config.platform}: Token refreshed ({expires_in/3600:.1f}h)")
+            except Exception as e:
+                results[config.platform] = {'status': 'ERROR', 'error': str(e)}
+                logger.error(f"  ✗ {config.platform}: {str(e)[:100]}")
+        
+        return results
+    finally:
+        db.close()
+
+
+def run_token_refresh():
+    """Run token refresh"""
+    logger.info("🔑 Refreshing tokens...")
+    try:
+        result = asyncio.run(refresh_tokens())
+        logger.info(f"✅ Token refresh completed: {len(result)} platforms")
+    except Exception as e:
+        logger.error(f"❌ Token refresh failed: {e}")
+
+
 def run_sync():
     """Run all sync tasks"""
     start_time = datetime.now()
@@ -165,16 +222,20 @@ def run_sync():
 def main():
     logger.info("🚀 WeOrder Scheduler Started")
     logger.info(f"   Log dir: {LOG_DIR}")
-    logger.info(f"   Schedule: Every hour at :00")
-    logger.info(f"   Finance: Also at 08:00 and 20:00")
+    logger.info(f"   Schedule: Twice daily at 08:00 and 20:00")
+    logger.info(f"   Token Refresh: Every 3 hours")
+    logger.info(f"   Note: Webhooks handle real-time updates, Sync is backup only")
     
-    # Run immediately on start
-    run_sync()
+    # Refresh tokens immediately on start
+    run_token_refresh()
     
-    # Schedule to run every hour
-    schedule.every().hour.at(":00").do(run_sync)
+    # DO NOT run sync on start - let webhooks handle real-time
+    # Sync is backup only, runs twice daily
     
-    # Also run at specific times for finance (twice daily)
+    # Token refresh every 3 hours (before Shopee token expires at 4h)
+    schedule.every(3).hours.do(run_token_refresh)
+    
+    # Sync twice daily only (backup for missed webhooks)
     schedule.every().day.at("08:00").do(run_sync)
     schedule.every().day.at("20:00").do(run_sync)
     

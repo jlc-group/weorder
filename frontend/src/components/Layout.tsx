@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, Link } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import { useAuth } from '../contexts/AuthContext';
+import api from '../api/client';
 
 interface LayoutProps {
     children: React.ReactNode;
@@ -10,10 +11,17 @@ interface LayoutProps {
     actions?: React.ReactNode;
 }
 
+interface SyncHealth {
+    overall_status: 'healthy' | 'warning' | 'critical';
+    issues: string[];
+}
+
 const Layout: React.FC<LayoutProps> = ({ children, title = "WeOrder", breadcrumb, actions }) => {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [currentTime, setCurrentTime] = useState(new Date());
     const [dropdownOpen, setDropdownOpen] = useState(false);
+    const [syncHealth, setSyncHealth] = useState<SyncHealth | null>(null);
+    const [healthLoading, setHealthLoading] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
     const { user, logout } = useAuth();
     const navigate = useNavigate();
@@ -28,6 +36,29 @@ const Layout: React.FC<LayoutProps> = ({ children, title = "WeOrder", breadcrumb
     useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 1000);
         return () => clearInterval(timer);
+    }, []);
+
+    // Fetch sync health status - Manual refresh function
+    const fetchHealth = async () => {
+        setHealthLoading(true);
+        try {
+            const { data } = await api.get('/reconciliation/health');
+            setSyncHealth({
+                overall_status: data.overall_status,
+                issues: data.issues || []
+            });
+        } catch (e) {
+            // Silently fail - don't block UI
+        } finally {
+            setHealthLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchHealth();
+        // Auto-refresh every 30 minutes (ช่วงใช้งานจริง 9.00-13.00, นอกเหนือจากนั้นใช้ manual)
+        const interval = setInterval(fetchHealth, 30 * 60 * 1000);
+        return () => clearInterval(interval);
     }, []);
 
     // Close dropdown when clicking outside
@@ -81,6 +112,27 @@ const Layout: React.FC<LayoutProps> = ({ children, title = "WeOrder", breadcrumb
                     </div>
 
                     <div className="d-flex align-items-center gap-3">
+                        {/* Manual Sync Health Check Button */}
+                        <button
+                            className="btn btn-sm btn-outline-secondary"
+                            onClick={fetchHealth}
+                            disabled={healthLoading}
+                            title="คลิกเพื่อ check สถานะ sync (auto check ทุก 30 นาที)"
+                        >
+                            <i className={`bi ${healthLoading ? 'bi-arrow-repeat spin' : 'bi-arrow-clockwise'}`}></i>
+                        </button>
+                        {/* Sync Health Indicator */}
+                        {syncHealth && syncHealth.overall_status !== 'healthy' && (
+                            <Link
+                                to="/report/sync-health"
+                                className={`btn btn-sm ${syncHealth.overall_status === 'critical' ? 'btn-danger' : 'btn-warning'}`}
+                                title={syncHealth.issues.join(', ')}
+                            >
+                                <i className="bi bi-exclamation-triangle me-1"></i>
+                                Sync {syncHealth.overall_status === 'critical' ? 'Error' : 'Warning'}
+                                <span className="badge bg-light text-dark ms-1">{syncHealth.issues.length}</span>
+                            </Link>
+                        )}
                         <span className="text-muted small">
                             <i className="bi bi-clock me-1"></i>
                             {formatDate(currentTime)}

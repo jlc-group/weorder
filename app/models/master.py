@@ -34,6 +34,8 @@ class Warehouse(Base, UUIDMixin, TimestampMixin):
     orders = relationship("OrderHeader", back_populates="warehouse")
     stock_ledger = relationship("StockLedger", back_populates="warehouse")
     prepack_boxes = relationship("PrepackBox", back_populates="warehouse")
+    locations = relationship("Location", back_populates="warehouse")
+    stock_balances = relationship("StockBalance", back_populates="warehouse")
 
 class SalesChannel(Base):
     """Sales Channel (Shopee, Lazada, TikTok, etc.)"""

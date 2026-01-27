@@ -19,6 +19,12 @@ interface OutboundData {
     platforms?: Record<string, { orders: number, items: number }>;
 }
 
+interface Warehouse {
+    id: string;
+    name: string;
+    code: string;
+}
+
 const Stock: React.FC = () => {
     // Tab state
     const [activeTab, setActiveTab] = useState<'summary' | 'movements' | 'outbound'>('summary');
@@ -33,22 +39,49 @@ const Stock: React.FC = () => {
     const [movementsStartDate, setMovementsStartDate] = useState(new Date().toISOString().split('T')[0]);
     const [movementsEndDate, setMovementsEndDate] = useState(new Date().toISOString().split('T')[0]);
 
+    // Warehouse Filter
+    const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+    const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>('');
+
+    // Transfer Modal State
+    const [showTransferModal, setShowTransferModal] = useState(false);
+    const [transferForm, setTransferForm] = useState({
+        sku: '',
+        from_warehouse_id: '',
+        to_warehouse_id: '',
+        quantity: 1
+    });
+
     // Daily Outbound state
     const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
     const [outboundData, setOutboundData] = useState<OutboundData | null>(null);
+    const [dateMode, setDateMode] = useState<'collection' | 'rts'>('collection');
+
+    // Fetch warehouses
+    useEffect(() => {
+        api.get('/master/warehouses').then(res => {
+            setWarehouses(res.data);
+            if (res.data.length > 0) {
+                setSelectedWarehouseId(res.data[0].id);
+            }
+        }).catch(err => console.error(err));
+    }, []);
 
     // Fetch stock summary
     const fetchSummary = useCallback(async () => {
         setLoading(true);
         try {
-            const res = await api.get('/stock/summary');
+            const params: any = {};
+            if (selectedWarehouseId) params.warehouse_id = selectedWarehouseId;
+
+            const res = await api.get('/stock/summary', { params });
             setSummary(res.data);
         } catch (error) {
             console.error(error);
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [selectedWarehouseId]);
 
     // Fetch stock movements
     const fetchMovements = useCallback(async () => {
@@ -73,7 +106,7 @@ const Stock: React.FC = () => {
         setLoading(true);
         try {
             const { data } = await api.get(`/report/daily-outbound`, {
-                params: { date: selectedDate }
+                params: { date: selectedDate, date_mode: dateMode }
             });
             setOutboundData(data);
         } catch (e) {
@@ -81,7 +114,7 @@ const Stock: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    }, [selectedDate]);
+    }, [selectedDate, dateMode]);
 
     useEffect(() => {
         if (activeTab === 'summary') fetchSummary();
@@ -122,6 +155,41 @@ const Stock: React.FC = () => {
         document.body.removeChild(link);
     };
 
+    const handleTransfer = async () => {
+        if (!transferForm.sku || !transferForm.from_warehouse_id || !transferForm.to_warehouse_id || !transferForm.quantity) {
+            alert('กรุณากรอกข้อมูลให้ครบถ้วน');
+            return;
+        }
+
+        // Find product ID from SKU (Assuming SKU is unique and we can find it from summary list or need separate API)
+        // For simplicity, let's assume we find it in summary list if loaded, or we need to fetch product ID by SKU.
+        // Let's use the summary list for now.
+        const product = summary.find(s => s.sku === transferForm.sku);
+        if (!product) {
+            alert('ไม่พบสินค้านี้ในระบบ (กรุณาโหลดหน้า Summary ให้ครบก่อน)');
+            return;
+        }
+
+        if (transferForm.from_warehouse_id === transferForm.to_warehouse_id) {
+            alert('คลังสินค้าต้นทางและปลายทางต้องไม่เหมือนกัน');
+            return;
+        }
+
+        try {
+            await api.post('/stock/transfer', {
+                product_id: product.product_id,
+                from_warehouse_id: transferForm.from_warehouse_id,
+                to_warehouse_id: transferForm.to_warehouse_id,
+                quantity: transferForm.quantity
+            });
+            alert('โอนย้ายสำเร็จ');
+            setShowTransferModal(false);
+            fetchSummary(); // Refresh
+        } catch (e) {
+            alert('เกิดข้อผิดพลาด: ' + (e as any).message);
+        }
+    };
+
     const breadcrumb = <li className="breadcrumb-item active">Stock</li>;
 
     // Calculate summary stats
@@ -132,6 +200,24 @@ const Stock: React.FC = () => {
     return (
         <Layout title="Stock Management" breadcrumb={breadcrumb} actions={
             <div className="d-flex gap-2">
+                <button
+                    className="btn btn-outline-secondary"
+                    onClick={() => setShowTransferModal(true)}
+                >
+                    <i className="bi bi-arrow-left-right me-2"></i>โอนย้ายสต็อก
+                </button>
+
+                <select
+                    className="form-select"
+                    style={{ width: '200px' }}
+                    value={selectedWarehouseId}
+                    onChange={(e) => setSelectedWarehouseId(e.target.value)}
+                >
+                    {warehouses.map(w => (
+                        <option key={w.id} value={w.id}>{w.name}</option>
+                    ))}
+                </select>
+
                 {activeTab === 'outbound' && (
                     <button className="btn btn-success" onClick={handleExport} disabled={!outboundData}>
                         <i className="bi bi-file-earmark-excel me-2"></i>Export CSV
@@ -148,35 +234,74 @@ const Stock: React.FC = () => {
         }>
             {/* Summary Cards */}
             {activeTab === 'summary' && (
-                <div className="row g-3 mb-4">
-                    <div className="col-md-4">
-                        <div className="card bg-primary text-white h-100">
-                            <div className="card-body text-center">
-                                <h6 className="card-title opacity-75">สต็อกทั้งหมด</h6>
-                                <h2 className="display-5 fw-bold mb-0">{totalOnHand.toLocaleString()}</h2>
-                                <div className="small opacity-75">ชิ้น</div>
+                <>
+                    {/* Date Info Banner */}
+                    <div className="alert alert-info d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <i className="bi bi-info-circle me-2"></i>
+                            <strong>สต็อกคงเหลือ ณ ปัจจุบัน</strong>
+                            <span className="ms-2 text-muted">(คำนวณจาก Stock Ledger ทั้งหมด)</span>
+                        </div>
+                        <div className="text-muted small">
+                            อัพเดทล่าสุด: {new Date().toLocaleString('th-TH')}
+                        </div>
+                    </div>
+
+                    <div className="row g-3 mb-4">
+                        <div className="col-md-4">
+                            <div className="card bg-primary text-white h-100">
+                                <div className="card-body text-center">
+                                    <h6 className="card-title opacity-75">สต็อกทั้งหมด</h6>
+                                    <h2 className="display-5 fw-bold mb-0">{totalOnHand.toLocaleString()}</h2>
+                                    <div className="small opacity-75">ชิ้น</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="col-md-4">
+                            <div className="card bg-warning text-dark h-100">
+                                <div className="card-body text-center">
+                                    <h6 className="card-title opacity-75">จองแล้ว</h6>
+                                    <h2 className="display-5 fw-bold mb-0">{totalAllocated.toLocaleString()}</h2>
+                                    <div className="small opacity-75">ชิ้น</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="col-md-4">
+                            <div className="card bg-danger text-white h-100">
+                                <div className="card-body text-center">
+                                    <h6 className="card-title opacity-75">ใกล้หมด (&lt;10)</h6>
+                                    <h2 className="display-5 fw-bold mb-0">{lowStockCount}</h2>
+                                    <div className="small opacity-75">รายการ</div>
+                                </div>
                             </div>
                         </div>
                     </div>
-                    <div className="col-md-4">
-                        <div className="card bg-warning text-dark h-100">
-                            <div className="card-body text-center">
-                                <h6 className="card-title opacity-75">จองแล้ว</h6>
-                                <h2 className="display-5 fw-bold mb-0">{totalAllocated.toLocaleString()}</h2>
-                                <div className="small opacity-75">ชิ้น</div>
+
+                    {/* Warning if negative stock */}
+                    {totalOnHand < 0 && (
+                        <div className="alert alert-danger mb-3 d-flex justify-content-between align-items-center">
+                            <div>
+                                <i className="bi bi-exclamation-triangle me-2"></i>
+                                <strong>⚠️ สต็อกติดลบ!</strong> มีสินค้าบางรายการสต็อกติดลบ อาจเกิดจากยังไม่ได้ตั้ง stock เริ่มต้น
                             </div>
+                            <button
+                                className="btn btn-warning btn-sm"
+                                onClick={async () => {
+                                    if (!confirm('ต้องการ Reset สต็อกที่ติดลบเป็น 0 หรือไม่? (จะเพิ่ม stock adjustment ให้ทุกรายการที่ติดลบ)')) return;
+                                    try {
+                                        const res = await api.post('/stock/reset-to-zero');
+                                        alert(`สำเร็จ! แก้ไข ${res.data.fixed_products} รายการ, รวม ${res.data.total_adjusted} ชิ้น`);
+                                        fetchSummary();
+                                    } catch (e) {
+                                        alert('เกิดข้อผิดพลาด: ' + (e as any).message);
+                                    }
+                                }}
+                            >
+                                🔧 Reset สต็อกติดลบเป็น 0
+                            </button>
                         </div>
-                    </div>
-                    <div className="col-md-4">
-                        <div className="card bg-danger text-white h-100">
-                            <div className="card-body text-center">
-                                <h6 className="card-title opacity-75">ใกล้หมด (&lt;10)</h6>
-                                <h2 className="display-5 fw-bold mb-0">{lowStockCount}</h2>
-                                <div className="small opacity-75">รายการ</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                    )}
+                </>
             )}
 
             {/* Daily Outbound Cards */}
@@ -196,7 +321,19 @@ const Stock: React.FC = () => {
                                     />
                                 </div>
                                 <div className="col-md-3">
-                                    <button className="btn btn-primary w-100" onClick={fetchOutbound} disabled={loading}>
+                                    <label className="form-label">โหมดการนับ</label>
+                                    <select
+                                        className="form-select"
+                                        value={dateMode}
+                                        onChange={(e) => setDateMode(e.target.value as 'collection' | 'rts')}
+                                    >
+                                        <option value="collection">Courier รับแล้ว</option>
+                                        <option value="rts">แพ็คแล้ว (RTS)</option>
+                                    </select>
+                                </div>
+                                <div className="col-md-3">
+                                    <label className="form-label">&nbsp;</label>
+                                    <button className="btn btn-primary w-100 d-block" onClick={fetchOutbound} disabled={loading}>
                                         <i className={`bi ${loading ? 'bi-arrow-repeat spin' : 'bi-search'} me-2`}></i>
                                         โหลดข้อมูล
                                     </button>
@@ -304,7 +441,8 @@ const Stock: React.FC = () => {
                                         <th>Name</th>
                                         <th className="text-end">On Hand</th>
                                         <th className="text-end">Allocated</th>
-                                        <th className="text-end pe-4">Available</th>
+                                        <th className="text-end">Available</th>
+                                        <th className="text-end pe-4">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -314,12 +452,21 @@ const Stock: React.FC = () => {
                                             <td>{item.product_name}</td>
                                             <td className="text-end">{item.on_hand}</td>
                                             <td className="text-end text-warning">{item.allocated}</td>
-                                            <td className={`text-end fw-bold pe-4 ${(item.available || 0) < 10 ? 'text-danger' : 'text-success'}`}>
+                                            <td className={`text-end fw-bold ${(item.available || 0) < 10 ? 'text-danger' : 'text-success'}`}>
                                                 {item.available}
+                                            </td>
+                                            <td className="text-end pe-4">
+                                                <a
+                                                    href={`/stock/card/${encodeURIComponent(item.sku)}`}
+                                                    className="btn btn-sm btn-outline-primary"
+                                                    title="ดู Stock Card"
+                                                >
+                                                    <i className="bi bi-card-list"></i>
+                                                </a>
                                             </td>
                                         </tr>
                                     ))}
-                                    {filteredSummary.length === 0 && !loading && <tr><td colSpan={5} className="text-center py-4">No stock data</td></tr>}
+                                    {filteredSummary.length === 0 && !loading && <tr><td colSpan={6} className="text-center py-4">No stock data</td></tr>}
                                 </tbody>
                             </table>
                         )}
@@ -412,6 +559,73 @@ const Stock: React.FC = () => {
                     </div>
                 </div>
             </div>
+
+            {/* Transfer Modal */}
+            {showTransferModal && (
+                <div className="modal show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                    <div className="modal-dialog">
+                        <div className="modal-content">
+                            <div className="modal-header">
+                                <h5 className="modal-title">โอนย้ายสินค้าข้ามคลัง</h5>
+                                <button type="button" className="btn-close" onClick={() => setShowTransferModal(false)}></button>
+                            </div>
+                            <div className="modal-body">
+                                <div className="mb-3">
+                                    <label className="form-label">SKU สินค้า</label>
+                                    <input
+                                        type="text"
+                                        className="form-control"
+                                        value={transferForm.sku}
+                                        onChange={e => setTransferForm({ ...transferForm, sku: e.target.value })}
+                                        list="sku-options"
+                                        placeholder="พิมพ์ SKU..."
+                                    />
+                                    <datalist id="sku-options">
+                                        {summary.map(s => <option key={s.product_id} value={s.sku}>{s.product_name}</option>)}
+                                    </datalist>
+                                </div>
+                                <div className="row g-3 mb-3">
+                                    <div className="col-6">
+                                        <label className="form-label">จากคลัง</label>
+                                        <select
+                                            className="form-select"
+                                            value={transferForm.from_warehouse_id}
+                                            onChange={e => setTransferForm({ ...transferForm, from_warehouse_id: e.target.value })}
+                                        >
+                                            <option value="">เลือกคลังต้นทาง</option>
+                                            {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div className="col-6">
+                                        <label className="form-label">ไปยังคลัง</label>
+                                        <select
+                                            className="form-select"
+                                            value={transferForm.to_warehouse_id}
+                                            onChange={e => setTransferForm({ ...transferForm, to_warehouse_id: e.target.value })}
+                                        >
+                                            <option value="">เลือกคลังปลายทาง</option>
+                                            {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div className="mb-3">
+                                    <label className="form-label">จำนวน</label>
+                                    <input
+                                        type="number"
+                                        className="form-control"
+                                        value={transferForm.quantity}
+                                        onChange={e => setTransferForm({ ...transferForm, quantity: parseInt(e.target.value) || 0 })}
+                                    />
+                                </div>
+                            </div>
+                            <div className="modal-footer">
+                                <button type="button" className="btn btn-secondary" onClick={() => setShowTransferModal(false)}>ยกเลิก</button>
+                                <button type="button" className="btn btn-primary" onClick={handleTransfer}>ยืนยันการโอน</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </Layout>
     );
 };

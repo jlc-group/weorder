@@ -95,9 +95,9 @@ const Returns: React.FC = () => {
 
             // Load counts for each status group
             const [pendingRes, receivedRes, failedRes] = await Promise.all([
-                api.get(`/orders?status=TO_RETURN,RETURN_INITIATED&per_page=1&${params}`),
-                api.get(`/orders?status=RETURNED&per_page=1&${params}`),
-                api.get(`/orders?status=DELIVERY_FAILED&per_page=1&${params}`)
+                api.get(`/orders?status=TO_RETURN,RETURN_INITIATED&per_page=1&date_field=returned_at&${params}`),
+                api.get(`/orders?status=RETURNED&per_page=1&date_field=returned_at&${params}`),
+                api.get(`/orders?status=DELIVERY_FAILED&per_page=1&date_field=returned_at&${params}`)
             ]);
 
             setStatusCounts({

@@ -180,7 +180,10 @@ class TikTokClient(BasePlatformClient):
             if method == "GET":
                 response = await client.get(url, params=request_params, headers=headers)
             else:
-                response = await client.post(url, params=request_params, json=body, headers=headers)
+                # Manually serialize body to match signature generation
+                # json.dumps with separators=(',', ':') removes whitespace
+                content = json.dumps(body, separators=(',', ':'), sort_keys=True) if body is not None else ""
+                response = await client.post(url, params=request_params, content=content, headers=headers)
             
             self._log_api_call(method, full_path, response.status_code)
             data = response.json()
@@ -273,31 +276,41 @@ class TikTokClient(BasePlatformClient):
         status: Optional[str] = None,
         cursor: Optional[str] = None,
         page_size: int = 50,
+        use_update_time: bool = False,  # NEW: For incremental sync
     ) -> Dict[str, Any]:
         """
         Get list of orders from TikTok Shop - V2 API
         API: /orders/search
+        
+        Args:
+            use_update_time: If True, filter by update_time instead of create_time.
+                            This catches orders that changed status, not just new orders.
+                            Use for incremental sync to reduce API calls.
         """
         # Use query params for page_size to match working reference
         params = {
             "page_size": min(page_size, 100),
-            "sort_field": "create_time",
+            "sort_field": "update_time" if use_update_time else "create_time",
             "sort_order": "DESC",
         }
         
         body = {}
         
-        if time_from:
-            # Ensure UTC timezone if naive
-            if time_from.tzinfo is None:
-                # Assume UTC if naive, or convert to UTC if needed
-                # Ideally, the input should already be UTC, but let's be safe
-                pass 
-            body["create_time_ge"] = int(time_from.timestamp())
-        if time_to:
-            if time_to.tzinfo is None:
-                pass
-            body["create_time_lt"] = int(time_to.timestamp())
+        # Choose time filter based on mode
+        if use_update_time:
+            # INCREMENTAL MODE: Filter by update_time to catch status changes
+            if time_from:
+                body["update_time_ge"] = int(time_from.timestamp())
+            if time_to:
+                body["update_time_lt"] = int(time_to.timestamp())
+            logger.info(f"TikTok get_orders: INCREMENTAL mode (update_time filter)")
+        else:
+            # FULL SYNC MODE: Filter by create_time (original behavior)
+            if time_from:
+                body["create_time_ge"] = int(time_from.timestamp())
+            if time_to:
+                body["create_time_lt"] = int(time_to.timestamp())
+        
         if status:
             # V2 API typically prefers order_status_list for filtering
             # Even if single status, send as list
@@ -504,8 +517,16 @@ class TikTokClient(BasePlatformClient):
             payment_method=raw_order.get("payment_method_name", "UNKNOWN"),
             payment_status="PAID" if self.normalize_order_status(raw_order.get("status", "")) in ["PAID", "PACKING", "SHIPPED", "DELIVERED", "COMPLETED"] else "PENDING",
 
-            tracking_number=raw_order.get("packages", [{}])[0].get("tracking_number") if raw_order.get("packages") else None,
-            courier=raw_order.get("packages", [{}])[0].get("shipping_provider_name") if raw_order.get("packages") else None,
+            tracking_number=(
+                raw_order.get("packages", [{}])[0].get("tracking_number") 
+                if raw_order.get("packages") and raw_order.get("packages", [{}])[0].get("tracking_number")
+                else None
+            ),
+            # TikTok sends courier in "shipping_provider" (top-level), not packages[0].shipping_provider_name
+            courier=(
+                raw_order.get("shipping_provider")  # Primary: top-level field
+                or (raw_order.get("packages", [{}])[0].get("shipping_provider_name") if raw_order.get("packages") else None)  # Fallback
+            ),
 
             order_created_at=datetime.fromtimestamp(raw_order["create_time"], timezone.utc) if raw_order.get("create_time") else None,
             order_updated_at=datetime.fromtimestamp(raw_order["update_time"], timezone.utc) if raw_order.get("update_time") else None,
@@ -697,64 +718,333 @@ class TikTokClient(BasePlatformClient):
         """
         Get reverse orders (Returns/Refunds/Cancellations)
         API V2: /return_refund/202309/returns/search and cancellations/search
+        
+        Note: This function handles pagination internally and returns ALL results.
+        Caller should NOT loop over this function.
         """
         combined_items = []
+        MAX_PAGES = 20  # Safety limit to prevent infinite loops
         
         # 1. Fetch Returns with Pagination
         page_token = ""
-        while True:
+        seen_tokens = set()  # Track tokens to detect loops
+        page_count = 0
+        
+        while page_count < MAX_PAGES:
+            page_count += 1
             body = {
                 "page_size": page_size,
                 "update_time_ge": int(update_time_from.timestamp()),
                 "update_time_lt": int(update_time_to.timestamp()),
             }
             if page_token:
+                # Check for duplicate token (indicates API bug/loop)
+                if page_token in seen_tokens:
+                    logger.warning(f"Detected duplicate page_token in returns, breaking loop")
+                    break
+                seen_tokens.add(page_token)
                 body["page_token"] = page_token
                 
             try:
-                print(f"DEBUG: Fetching returns page (token: {page_token})...")
+                logger.debug(f"Fetching returns page {page_count} (token: {page_token[:20] if page_token else 'None'}...)")
                 resp = await self._make_request("/return_refund/202309/returns/search", method="POST", body=body)
                 returns = resp.get("return_orders", [])
-                print(f"DEBUG: Found {len(returns)} returns on this page")
+                logger.debug(f"Found {len(returns)} returns on page {page_count}")
+                
                 for r in returns:
                     r["return_status"] = r.get("return_status")
                     combined_items.append(r)
                 
-                page_token = resp.get("next_page_token")
+                page_token = resp.get("next_page_token", "")
                 if not page_token:
                     break
             except Exception as e:
                 logger.error(f"Error fetching TikTok returns: {e}")
                 break
+        
+        if page_count >= MAX_PAGES:
+            logger.warning(f"Hit MAX_PAGES limit ({MAX_PAGES}) for returns, some data may be missing")
 
         # 2. Fetch Cancellations with Pagination
         page_token = ""
-        while True:
+        seen_tokens = set()
+        page_count = 0
+        
+        while page_count < MAX_PAGES:
+            page_count += 1
             body = {
                 "page_size": page_size,
                 "update_time_ge": int(update_time_from.timestamp()),
                 "update_time_lt": int(update_time_to.timestamp()),
             }
             if page_token:
+                if page_token in seen_tokens:
+                    logger.warning(f"Detected duplicate page_token in cancellations, breaking loop")
+                    break
+                seen_tokens.add(page_token)
                 body["page_token"] = page_token
 
             try:
-                print(f"DEBUG: Fetching cancellations page (token: {page_token})...")
+                logger.debug(f"Fetching cancellations page {page_count} (token: {page_token[:20] if page_token else 'None'}...)")
                 resp = await self._make_request("/return_refund/202309/cancellations/search", method="POST", body=body)
                 cancellations = resp.get("cancellations", [])
-                print(f"DEBUG: Found {len(cancellations)} cancellations on this page")
+                logger.debug(f"Found {len(cancellations)} cancellations on page {page_count}")
+                
                 for c in cancellations:
                     c["return_status"] = c.get("cancel_status")
                     combined_items.append(c)
                 
-                page_token = resp.get("next_page_token")
+                page_token = resp.get("next_page_token", "")
                 if not page_token:
                     break
             except Exception as e:
                 logger.error(f"Error fetching TikTok cancellations: {e}")
                 break
         
+        if page_count >= MAX_PAGES:
+            logger.warning(f"Hit MAX_PAGES limit ({MAX_PAGES}) for cancellations, some data may be missing")
+        
+        logger.info(f"get_reverse_orders: Total {len(combined_items)} items (returns + cancellations)")
         return {
             "returns": combined_items,
             "next_page_token": None 
         }
+
+    # ========== Affiliate / Creator APIs ==========
+    
+    async def get_affiliate_orders(
+        self, 
+        time_from: datetime, 
+        time_to: datetime, 
+        cursor: str = None, 
+        page_size: int = 50
+    ) -> Dict:
+        """
+        Get affiliate orders - orders from creator content (video, live, showcase)
+        
+        API: /affiliate/202309/orders/search
+        
+        Returns orders with:
+        - affiliate_commission_rate
+        - creator_id  
+        - content_type (VIDEO, LIVE, SHOWCASE)
+        """
+        path = f"/affiliate/{self.API_VERSION}/orders/search"
+        
+        body = {
+            "create_time_ge": int(time_from.timestamp()),
+            "create_time_lt": int(time_to.timestamp()),
+            "page_size": min(page_size, 50),
+        }
+        if cursor:
+            body["page_token"] = cursor
+            
+        try:
+            resp = await self._make_request(path, method="POST", body=body)
+            logger.info(f"TikTok Affiliate Orders: {len(resp.get('orders', []))} found")
+            return resp
+        except Exception as e:
+            logger.error(f"Error fetching affiliate orders: {e}")
+            # Return empty if API not available (may need beta access)
+            return {"orders": [], "next_page_token": None}
+
+    async def get_affiliate_creators(self, cursor: str = None, page_size: int = 20) -> Dict:
+        """
+        Get list of affiliate creators promoting our products
+        
+        API: /affiliate/202309/open_collaborations/creators/search
+        """
+        path = f"/affiliate/{self.API_VERSION}/open_collaborations/creators/search"
+        
+        body = {
+            "page_size": min(page_size, 20),
+        }
+        if cursor:
+            body["page_token"] = cursor
+            
+        try:
+            resp = await self._make_request(path, method="POST", body=body)
+            return resp
+        except Exception as e:
+            logger.error(f"Error fetching affiliate creators: {e}")
+            return {"creators": [], "next_page_token": None}
+
+    async def get_creator_performance(self, creator_id: str, days: int = 30) -> Dict:
+        """
+        Get creator performance statistics
+        
+        API: /affiliate/202309/creators/{creator_id}/performance
+        
+        Returns:
+        - video_gmv: ยอดขายจากวิดีโอ
+        - live_gmv: ยอดขายจาก live
+        - showcase_gmv: ยอดขายจาก showcase
+        - total_orders: จำนวน orders ทั้งหมด
+        - commission_earned: ค่าคอมมิชชั่นที่ได้
+        """
+        path = f"/affiliate/{self.API_VERSION}/creators/{creator_id}/performance"
+        
+        params = {
+            "days": days,
+        }
+        
+        try:
+            resp = await self._make_request(path, method="GET", params=params)
+            return resp
+        except Exception as e:
+            logger.error(f"Error fetching creator performance for {creator_id}: {e}")
+            return {}
+
+    async def get_product_creatives(self, product_id: str, cursor: str = None, page_size: int = 20) -> Dict:
+        """
+        Get creatives (video/live content) for a specific product
+        
+        API: /affiliate/202309/products/{product_id}/creatives
+        
+        Returns creative count and details by SKU - useful for:
+        - จำนวน creative by SKU
+        - Video vs Live breakdown
+        """
+        path = f"/affiliate/{self.API_VERSION}/products/{product_id}/creatives"
+        
+        params = {
+            "page_size": min(page_size, 20),
+        }
+        if cursor:
+            params["page_token"] = cursor
+            
+        try:
+            resp = await self._make_request(path, method="GET", params=params)
+            return resp
+        except Exception as e:
+            logger.error(f"Error fetching product creatives for {product_id}: {e}")
+            return {"creatives": [], "next_page_token": None}
+
+    async def get_gmv_breakdown(self, time_from: datetime, time_to: datetime) -> Dict:
+        """
+        Get GMV breakdown by content type (Video, Live, Showcase, Other)
+        
+        Uses Finance Statement Transactions to calculate:
+        - video_gmv: ยอดขายจากวิดีโอ
+        - live_gmv: ยอดขายจาก live  
+        - affiliate_commission: ค่าคอมมิชชั่น creator ทั้งหมด
+        - direct_gmv: ยอดขายตรง (ไม่ผ่าน affiliate)
+        
+        Note: This aggregates data from statement_transactions which has
+        affiliate_commission_amount field.
+        """
+        result = {
+            "video_gmv": 0,
+            "live_gmv": 0,
+            "showcase_gmv": 0,
+            "direct_gmv": 0,
+            "total_gmv": 0,
+            "affiliate_commission": 0,
+            "orders_by_type": {
+                "video": 0,
+                "live": 0,
+                "showcase": 0,
+                "direct": 0
+            }
+        }
+        
+        try:
+            # Get statements for the period
+            statements_resp = await self.get_statements(time_from, time_to)
+            statements = statements_resp.get("statements", [])
+            
+            for statement in statements:
+                statement_id = statement.get("id")
+                if not statement_id:
+                    continue
+                    
+                # Get transactions for each statement
+                txn_resp = await self.get_statement_transactions(statement_id)
+                transactions = txn_resp.get("statement_transactions", [])
+                
+                for txn in transactions:
+                    order_amount = float(txn.get("order_amount", 0))
+                    affiliate_commission = float(txn.get("affiliate_commission_amount", 0))
+                    
+                    # Determine content type from transaction
+                    # TikTok transaction has "sale_type" or similar indicator
+                    sale_type = txn.get("sale_type", "").upper()
+                    
+                    if "VIDEO" in sale_type:
+                        result["video_gmv"] += order_amount
+                        result["orders_by_type"]["video"] += 1
+                    elif "LIVE" in sale_type:
+                        result["live_gmv"] += order_amount
+                        result["orders_by_type"]["live"] += 1
+                    elif "SHOWCASE" in sale_type or affiliate_commission > 0:
+                        result["showcase_gmv"] += order_amount
+                        result["orders_by_type"]["showcase"] += 1
+                    else:
+                        result["direct_gmv"] += order_amount
+                        result["orders_by_type"]["direct"] += 1
+                    
+                    result["total_gmv"] += order_amount
+                    result["affiliate_commission"] += affiliate_commission
+            
+            logger.info(f"TikTok GMV Breakdown: Video={result['video_gmv']}, Live={result['live_gmv']}, Total={result['total_gmv']}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error calculating GMV breakdown: {e}")
+            return result
+
+    async def get_sku_creative_count(self) -> Dict:
+        """
+        Get creative count grouped by SKU
+        
+        Returns: {sku: {"video_count": X, "live_count": Y, "total_orders": Z}}
+        
+        Uses affiliate orders to aggregate by SKU.
+        """
+        result = {}
+        
+        try:
+            # Get affiliate orders from last 30 days
+            time_to = datetime.now(timezone.utc)
+            time_from = time_to - timedelta(days=30)
+            
+            cursor = None
+            while True:
+                resp = await self.get_affiliate_orders(time_from, time_to, cursor)
+                orders = resp.get("orders", [])
+                
+                for order in orders:
+                    content_type = order.get("content_type", "UNKNOWN").upper()
+                    
+                    for item in order.get("line_items", []):
+                        sku = item.get("seller_sku", "UNKNOWN")
+                        
+                        if sku not in result:
+                            result[sku] = {
+                                "video_count": 0,
+                                "live_count": 0,
+                                "showcase_count": 0,
+                                "total_orders": 0,
+                                "total_revenue": 0
+                            }
+                        
+                        result[sku]["total_orders"] += 1
+                        result[sku]["total_revenue"] += float(item.get("sale_price", 0))
+                        
+                        if "VIDEO" in content_type:
+                            result[sku]["video_count"] += 1
+                        elif "LIVE" in content_type:
+                            result[sku]["live_count"] += 1
+                        else:
+                            result[sku]["showcase_count"] += 1
+                
+                cursor = resp.get("next_page_token")
+                if not cursor:
+                    break
+            
+            logger.info(f"TikTok SKU Creative Count: {len(result)} SKUs found")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error calculating SKU creative count: {e}")
+            return result

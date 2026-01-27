@@ -20,10 +20,14 @@ class Product(Base, UUIDMixin, TimestampMixin):
     currency_code = Column(String(3), default="THB")
     image_url = Column(String(500))
     is_active = Column(Boolean, default=True)
+    reorder_point = Column(Integer, default=10)  # Low stock alert threshold
+    target_days_to_keep = Column(Integer, default=30)  # Smart Reorder: Target days of inventory
+    lead_time_days = Column(Integer, default=7)  # Smart Reorder: Estimated lead time
     
     # Relationships
     order_items = relationship("OrderItem", back_populates="product")
     stock_ledger = relationship("StockLedger", back_populates="product")
+    stock_balances = relationship("StockBalance", back_populates="product")
     # BOM relationships
     set_components = relationship("ProductSetBom", foreign_keys="ProductSetBom.set_product_id", back_populates="set_product")
     component_of = relationship("ProductSetBom", foreign_keys="ProductSetBom.component_product_id", back_populates="component_product")

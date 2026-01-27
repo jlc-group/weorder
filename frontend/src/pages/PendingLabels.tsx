@@ -72,7 +72,7 @@ const PendingLabels: React.FC = () => {
         try {
             const ids = Array.from(selectedOrders).join(',');
             // Open PDF in new tab
-            window.open(`/api/orders/batch-labels?ids=${ids}&format=pdf`, '_blank');
+            window.open(`http://localhost:9203/api/orders/batch-labels?ids=${ids}&format=pdf`, '_blank');
         } catch (error) {
             console.error('Error printing labels:', error);
             alert('เกิดข้อผิดพลาดในการพิมพ์');

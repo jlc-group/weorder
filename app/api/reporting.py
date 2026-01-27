@@ -14,9 +14,16 @@ router = APIRouter(prefix="/report", tags=["Reporting"])
 def get_daily_outbound(
     date: date = Query(..., description="Date to check (YYYY-MM-DD)"),
     warehouse_id: Optional[UUID] = None,
+    date_mode: str = Query("collection", description="Mode: 'collection' (courier pickup) or 'rts' (packing/RTS time)"),
     db: Session = Depends(get_db)
 ):
     """
     Get summary of items sent out on a specific date
+    
+    Args:
+        date_mode: 
+            - 'collection': Uses collection_time (courier pickup time) - default
+            - 'rts': Uses rts_time (packing/ready-to-ship time) - matches packing records
     """
-    return ReportService.get_daily_outbound_stats(db, date, str(warehouse_id) if warehouse_id else None)
+    return ReportService.get_daily_outbound_stats(db, date, str(warehouse_id) if warehouse_id else None, date_mode=date_mode)
+

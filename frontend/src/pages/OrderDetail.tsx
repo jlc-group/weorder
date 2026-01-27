@@ -10,6 +10,11 @@ const OrderDetail: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [profitBreakdown, setProfitBreakdown] = useState<any>(null);
 
+    // Return verification state
+    const [showVerifyModal, setShowVerifyModal] = useState(false);
+    const [verifyNotes, setVerifyNotes] = useState('');
+    const [verifyLoading, setVerifyLoading] = useState(false);
+
     const fetchOrder = useCallback(async () => {
         try {
             const { data } = await api.get(`/orders/${orderId}`);
@@ -44,6 +49,25 @@ const OrderDetail: React.FC = () => {
         } catch (e) {
             console.error('Failed to change status:', e);
             alert('ไม่สามารถเปลี่ยนสถานะได้');
+        }
+    };
+
+    const verifyReturn = async () => {
+        setVerifyLoading(true);
+        try {
+            await api.post(`/orders/${orderId}/verify-return`, {
+                verified: true,
+                notes: verifyNotes
+            });
+            setShowVerifyModal(false);
+            setVerifyNotes('');
+            fetchOrder();
+            alert('บันทึกการตรวจสอบสำเร็จ');
+        } catch (e) {
+            console.error('Failed to verify return:', e);
+            alert('ไม่สามารถบันทึกการตรวจสอบได้');
+        } finally {
+            setVerifyLoading(false);
         }
     };
 
@@ -248,7 +272,28 @@ const OrderDetail: React.FC = () => {
                     </div>
 
                     {/* Financial Transparency (Money Trail) */}
-                    {profitBreakdown && (
+                    {/* Show different message for cancelled/returned orders */}
+                    {['CANCELLED', 'RETURNED', 'DELIVERY_FAILED'].includes(order.status_normalized) ? (
+                        <div className="card mt-3 border-0 shadow-sm overflow-hidden">
+                            <div className="card-header bg-secondary text-white d-flex justify-content-between align-items-center">
+                                <span><i className="bi bi-cash-coin me-2"></i>เส้นทางการเงิน (Money Trail)</span>
+                                <span className="badge bg-warning text-dark">ไม่มีรายได้</span>
+                            </div>
+                            <div className="card-body text-center py-4">
+                                <i className="bi bi-x-circle text-danger fs-1 d-block mb-3"></i>
+                                <h5 className="text-muted">
+                                    {order.status_normalized === 'CANCELLED' && 'ออเดอร์ถูกยกเลิก - ไม่มีการเงิน'}
+                                    {order.status_normalized === 'RETURNED' && 'สินค้าถูกคืน - เงินถูกคืนให้ลูกค้า'}
+                                    {order.status_normalized === 'DELIVERY_FAILED' && 'จัดส่งล้มเหลว - รอดำเนินการคืนเงิน'}
+                                </h5>
+                                <p className="text-muted small mb-0">
+                                    {order.status_normalized === 'CANCELLED' && 'ไม่มีเงินถูกหักหรือโอนสำหรับออเดอร์นี้'}
+                                    {order.status_normalized === 'RETURNED' && 'ยอดเงินที่ลูกค้าจ่ายจะถูกคืนโดยแพลตฟอร์ม'}
+                                    {order.status_normalized === 'DELIVERY_FAILED' && 'รอสินค้าถูกส่งคืนก่อนดำเนินการคืนเงิน'}
+                                </p>
+                            </div>
+                        </div>
+                    ) : profitBreakdown && (
                         <div className="card mt-3 border-0 shadow-sm overflow-hidden">
                             <div className="card-header bg-dark text-white d-flex justify-content-between align-items-center">
                                 <span><i className="bi bi-cash-coin me-2"></i>เส้นทางการเงิน (Money Trail)</span>
@@ -350,6 +395,102 @@ const OrderDetail: React.FC = () => {
                             </div>
                         </div>
                     </div>
+
+                    {/* Return/Delivery Failed Info */}
+                    {['DELIVERY_FAILED', 'RETURNED', 'TO_RETURN'].includes(order.status_normalized) && (
+                        <div className="card mb-3 border-danger border-2 shadow-sm">
+                            <div className="card-header bg-danger text-white">
+                                <i className="bi bi-exclamation-triangle me-2"></i>
+                                {order.status_normalized === 'DELIVERY_FAILED' ? 'จัดส่งล้มเหลว' : 'สินค้าตีคืน'}
+                            </div>
+                            <div className="card-body">
+                                <div className="d-flex justify-content-between mb-2">
+                                    <span className="text-muted">สาเหตุ</span>
+                                    <span className="badge bg-warning text-dark">
+                                        {(order as any).return_reason === 'DELIVERY_FAILED' ? 'จัดส่งไม่สำเร็จ' :
+                                            (order as any).return_reason === 'CUSTOMER_RETURN' ? 'ลูกค้าคืน' :
+                                                (order as any).return_reason || '-'}
+                                    </span>
+                                </div>
+                                <div className="d-flex justify-content-between mb-2">
+                                    <span className="text-muted">วันที่ตีกลับ</span>
+                                    <span className="fw-bold text-danger">
+                                        {(order as any).returned_at
+                                            ? new Date((order as any).returned_at).toLocaleString('th-TH')
+                                            : '-'}
+                                    </span>
+                                </div>
+                                {(order as any).return_verified !== undefined && (
+                                    <div className="d-flex justify-content-between mb-2">
+                                        <span className="text-muted">ตรวจสอบสภาพ</span>
+                                        <span className={`badge ${(order as any).return_verified ? 'bg-success' : 'bg-secondary'}`}>
+                                            {(order as any).return_verified ? 'ตรวจแล้ว' : 'ยังไม่ตรวจ'}
+                                        </span>
+                                    </div>
+                                )}
+                                {(order as any).return_notes && (
+                                    <div className="mt-2 p-2 bg-light rounded">
+                                        <small className="text-muted">หมายเหตุ:</small>
+                                        <div>{(order as any).return_notes}</div>
+                                    </div>
+                                )}
+
+                                {/* Verify Return Button & Form */}
+                                {!(order as any).return_verified && (
+                                    <div className="mt-3 pt-3 border-top">
+                                        {!showVerifyModal ? (
+                                            <button
+                                                className="btn btn-success w-100"
+                                                onClick={() => setShowVerifyModal(true)}
+                                            >
+                                                <i className="bi bi-check-circle me-2"></i>
+                                                ยืนยันตรวจสอบสินค้าตีคืน
+                                            </button>
+                                        ) : (
+                                            <div className="bg-light p-3 rounded">
+                                                <div className="mb-3">
+                                                    <label className="form-label fw-bold">
+                                                        <i className="bi bi-chat-left-text me-2"></i>
+                                                        หมายเหตุการตรวจสอบ
+                                                    </label>
+                                                    <textarea
+                                                        className="form-control"
+                                                        rows={3}
+                                                        placeholder="เช่น สินค้าสภาพดี, กล่องเปียก, ฯลฯ"
+                                                        value={verifyNotes}
+                                                        onChange={(e) => setVerifyNotes(e.target.value)}
+                                                    />
+                                                </div>
+                                                <div className="d-flex gap-2">
+                                                    <button
+                                                        className="btn btn-success flex-grow-1"
+                                                        onClick={verifyReturn}
+                                                        disabled={verifyLoading}
+                                                    >
+                                                        {verifyLoading ? (
+                                                            <span className="spinner-border spinner-border-sm me-2"></span>
+                                                        ) : (
+                                                            <i className="bi bi-check-lg me-2"></i>
+                                                        )}
+                                                        ยืนยัน
+                                                    </button>
+                                                    <button
+                                                        className="btn btn-outline-secondary"
+                                                        onClick={() => {
+                                                            setShowVerifyModal(false);
+                                                            setVerifyNotes('');
+                                                        }}
+                                                    >
+                                                        ยกเลิก
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
 
                     {/* Status Actions */}
                     <div className="card border-0 shadow-sm">

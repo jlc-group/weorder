@@ -31,11 +31,27 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                     <NavLink to="/dashboard" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
                         <i className="bi bi-speedometer2"></i>Dashboard
                     </NavLink>
+
+                    <div className="nav-section">ออเดอร์</div>
                     <NavLink to="/orders" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
-                        <i className="bi bi-receipt"></i>ออเดอร์
+                        <i className="bi bi-receipt"></i>ออเดอร์ทั้งหมด
                     </NavLink>
                     <NavLink to="/returns" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
                         <i className="bi bi-arrow-return-left"></i>สินค้าตีคืน
+                    </NavLink>
+
+                    <div className="nav-section">ปฏิบัติการ</div>
+                    <NavLink to="/packing" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
+                        <i className="bi bi-box2"></i>แพ็คสินค้า
+                    </NavLink>
+                    <NavLink to="/manifests" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
+                        <i className="bi bi-file-earmark-spreadsheet"></i>ใบส่งสินค้า (Manifest)
+                    </NavLink>
+                    <NavLink to="/packing/print-labels" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
+                        <i className="bi bi-printer"></i>พิมพ์ใบปะหน้า
+                    </NavLink>
+                    <NavLink to="/report/outbound" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
+                        <i className="bi bi-truck"></i>รายงานส่งสินค้า
                     </NavLink>
 
                     <div className="nav-section">สินค้า & สต๊อก</div>
@@ -47,20 +63,6 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                     </NavLink>
                     <NavLink to="/stock" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
                         <i className="bi bi-stack"></i>สต๊อก
-                    </NavLink>
-                    <NavLink to="/report/outbound" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
-                        <i className="bi bi-truck"></i>รายงานส่งสินค้า
-                    </NavLink>
-
-                    <div className="nav-section">ปฏิบัติการ</div>
-                    <NavLink to="/packing" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
-                        <i className="bi bi-box2"></i>แพ็คสินค้า
-                    </NavLink>
-                    <NavLink to="/pending-labels" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
-                        <i className="bi bi-printer"></i>ใบปะหน้าค้าง
-                    </NavLink>
-                    <NavLink to="/promotions" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
-                        <i className="bi bi-gift"></i>โปรโมชั่น
                     </NavLink>
 
                     <div className="nav-section">การเงิน</div>
@@ -78,6 +80,11 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                     </NavLink>
                     <NavLink to="/invoice-manager" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
                         <i className="bi bi-receipt-cutoff"></i>ใบกำกับภาษี
+                    </NavLink>
+
+                    <div className="nav-section">การตลาด</div>
+                    <NavLink to="/promotions" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={onClose}>
+                        <i className="bi bi-gift"></i>โปรโมชั่น
                     </NavLink>
 
                     <div className="nav-section">ตั้งค่า</div>

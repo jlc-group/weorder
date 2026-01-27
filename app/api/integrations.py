@@ -345,3 +345,206 @@ async def exchange_token(
         
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@integrations_router.post("/platforms/{config_id}/refresh-token")
+async def refresh_platform_token(
+    config_id: str,
+    db: Session = Depends(get_db),
+):
+    """Refresh access token for a single platform"""
+    from starlette.concurrency import run_in_threadpool
+    from datetime import timedelta
+
+    config = await run_in_threadpool(integration_service.get_platform_config, db, config_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Platform config not found")
+    
+    client = integration_service.get_client_for_config(config)
+    
+    try:
+        result = await client.refresh_access_token()
+        
+        # Update tokens in database
+        expires_in = result.get("expires_in", 3600)
+        expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+        
+        await run_in_threadpool(
+            integration_service.update_tokens,
+            db=db,
+            config_id=config_id,
+            access_token=result["access_token"],
+            refresh_token=result.get("refresh_token", config.refresh_token),
+            expires_at=expires_at,
+        )
+        
+        return {
+            "message": "Token refreshed successfully",
+            "platform": config.platform,
+            "expires_at": expires_at.isoformat(),
+            "expires_in_hours": round(expires_in / 3600, 1)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@integrations_router.post("/refresh-all-tokens")
+async def refresh_all_tokens(
+    db: Session = Depends(get_db),
+):
+    """Refresh access tokens for all active platforms"""
+    from starlette.concurrency import run_in_threadpool
+    from datetime import timedelta
+
+    configs = await run_in_threadpool(
+        integration_service.get_platform_configs, 
+        db, 
+        is_active=True
+    )
+    
+    results = {}
+    
+    for config in configs:
+        if not config.sync_enabled:
+            results[config.platform] = {"status": "skipped", "reason": "sync_disabled"}
+            continue
+            
+        try:
+            client = integration_service.get_client_for_config(config)
+            result = await client.refresh_access_token()
+            
+            # Update tokens in database
+            expires_in = result.get("expires_in", 3600)
+            expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+            
+            await run_in_threadpool(
+                integration_service.update_tokens,
+                db=db,
+                config_id=str(config.id),
+                access_token=result["access_token"],
+                refresh_token=result.get("refresh_token", config.refresh_token),
+                expires_at=expires_at,
+            )
+            
+            results[config.platform] = {
+                "status": "success",
+                "expires_at": expires_at.isoformat(),
+                "expires_in_hours": round(expires_in / 3600, 1)
+            }
+        except Exception as e:
+            results[config.platform] = {
+                "status": "error",
+                "error": str(e)[:100]
+            }
+    
+    return {
+        "message": "Token refresh completed",
+        "results": results
+    }
+
+
+# ========== Incoming Orders (External) ==========
+
+class IncomingOrderItem(BaseModel):
+    sku: str
+    quantity: int
+    unit_price: float = 0.0
+    product_name: Optional[str] = None
+
+class IncomingOrderRequest(BaseModel):
+    external_order_id: str
+    channel_code: str
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_address: Optional[str] = None
+    payment_method: Optional[str] = "COD"
+    shipping_fee: float = 0.0
+    discount_amount: float = 0.0
+    remark: Optional[str] = None
+    items: List[IncomingOrderItem]
+
+@integrations_router.post("/incoming/orders", status_code=status.HTTP_201_CREATED)
+def create_incoming_order(
+    data: IncomingOrderRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Create an order from an external source (e.g., Order Flow Palace).
+    Status will be set to 'NEW' (or 'PAID' if specified/implied).
+    """
+    from app.services.order_service import OrderService
+    from app.schemas.order import OrderCreate, OrderItemCreate
+    from app.models import Company, Warehouse
+    from decimal import Decimal
+    
+    # 1. Get Default Company & Warehouse
+    company = db.query(Company).first()
+    if not company:
+        raise HTTPException(status_code=500, detail="No company configured in WeOrder")
+        
+    warehouse = db.query(Warehouse).filter(Warehouse.is_default == True).first()
+    if not warehouse:
+        warehouse = db.query(Warehouse).first() # Fallback
+        
+    if not warehouse:
+        raise HTTPException(status_code=500, detail="No warehouse configured in WeOrder")
+
+    # 2. Check overlap
+    existing = OrderService.get_order_by_external_id(db, data.external_order_id)
+    if existing:
+         return {
+             "success": True,
+             "weorder_id": str(existing.id),
+             "status": existing.status_normalized,
+             "message": "Order already exists",
+             "is_duplicate": True
+         }
+
+    # 3. Map to OrderCreate
+    # Convert float to Decimal
+    items_create = [
+        OrderItemCreate(
+            sku=item.sku,
+            quantity=item.quantity,
+            unit_price=Decimal(str(item.unit_price)),
+            product_name=item.product_name,
+            line_type="NORMAL"
+        ) for item in data.items
+    ]
+    
+    order_in = OrderCreate(
+        external_order_id=data.external_order_id,
+        channel_code=data.channel_code,
+        company_id=company.id,
+        warehouse_id=warehouse.id,
+        customer_name=data.customer_name,
+        customer_phone=data.customer_phone,
+        customer_address=data.customer_address,
+        payment_method=data.payment_method,
+        shipping_fee=Decimal(str(data.shipping_fee)),
+        discount_amount=Decimal(str(data.discount_amount)),
+        items=items_create
+    )
+    
+    # 4. Create Order
+    try:
+        order = OrderService.create_order(db, order_in)
+        
+        # Optional: Auto-approve to PAID if from trusted source?
+        # For now, keep as NEW. Warehouse can confirm payment or auto-confirm.
+        # If Palace sends it, it implies "Approved for packing", so maybe set to PAID?
+        # Let's update to PAID immediately to appear in "New Orders" tab which usually shows PAID.
+        
+        OrderService.update_status(db, order.id, "PAID", performed_by=None)
+        
+        return {
+            "success": True,
+            "weorder_id": str(order.id),
+            "status": "PAID",
+            "message": "Order created and set to PAID",
+            "is_duplicate": False
+        }
+    except Exception as e:
+        logger.error(f"Failed to create incoming order: {e}")
+        raise HTTPException(status_code=400, detail=str(e))

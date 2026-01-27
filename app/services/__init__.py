@@ -4,6 +4,7 @@ from .stock_service import StockService
 from .promotion_service import PromotionService
 from . import integration_service
 from . import sync_service
+from .replenishment_service import ReplenishmentService
 
 __all__ = [
     "OrderService", 
@@ -12,4 +13,5 @@ __all__ = [
     "PromotionService",
     "integration_service",
     "sync_service",
+    "ReplenishmentService",
 ]

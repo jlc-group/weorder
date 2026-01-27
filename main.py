@@ -11,6 +11,7 @@ import os
 from app.core import settings, engine, Base
 from app.api.router import api_router
 from app.jobs import start_scheduler, stop_scheduler
+from app.services.webhook_processor import start_webhook_processor, stop_webhook_processor
 
 # Lifespan for startup/shutdown
 @asynccontextmanager
@@ -19,13 +20,23 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     print(f"WeOrder starting on port {settings.APP_PORT}")
     
-    # Scheduler is started separately via API or background job
-    # Do NOT start scheduler here - it blocks uvicorn startup
-    print("Scheduler disabled in lifespan - start via /api/sync/start if needed")
+    # Start webhook processor for real-time processing
+    await start_webhook_processor()
+    print("[OK] Webhook processor started (auto-processing pending webhooks)")
+    
+    # Start order sync scheduler automatically
+    try:
+        start_scheduler()
+        print("[OK] Order sync scheduler started (auto-sync enabled)")
+    except Exception as e:
+        print(f"[WARN] Failed to start scheduler: {e}")
     
     yield
     
     # Shutdown
+    await stop_webhook_processor()
+    print("Webhook processor stopped")
+    
     try:
         stop_scheduler()
         print("Order sync scheduler stopped")

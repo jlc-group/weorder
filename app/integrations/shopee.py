@@ -185,6 +185,7 @@ class ShopeeClient(BasePlatformClient):
         status: Optional[str] = None,
         cursor: Optional[str] = None,
         page_size: int = 50,
+        use_update_time: bool = False,  # NEW: Support update_time for incremental sync
     ) -> Dict[str, Any]:
         """
         Get list of orders from Shopee
@@ -201,8 +202,11 @@ class ShopeeClient(BasePlatformClient):
         if not time_to:
             time_to = datetime.utcnow()
         
+        # Use update_time for incremental sync (catches status changes)
+        time_range_field = "update_time" if use_update_time else "create_time"
+        
         params.update({
-            "time_range_field": "create_time",
+            "time_range_field": time_range_field,
             "time_from": int(time_from.timestamp()),
             "time_to": int(time_to.timestamp()),
             "page_size": min(page_size, 100),
@@ -537,6 +541,69 @@ class ShopeeClient(BasePlatformClient):
                 return data.get("response", {})
         except Exception as e:
             logger.error(f"Error fetching tracking info for {order_sn}: {e}")
+            return None
+
+    async def get_shipping_label(self, order_sn: str) -> Optional[str]:
+        """
+        Get shipping label/document URL for an order
+        API: /api/v2/logistics/download_shipping_document
+        
+        Returns: URL to download the shipping label PDF
+        """
+        await self.ensure_valid_token()
+        
+        # First get the package list from order detail
+        order = await self.get_order_detail(order_sn)
+        if not order:
+            logger.error(f"Order not found: {order_sn}")
+            return None
+        
+        package_list = order.get("package_list", [])
+        if not package_list:
+            # No package, use order_sn directly
+            package_list = [{"package_number": order_sn}]
+        
+        # Get shipping document
+        path = "/api/v2/logistics/download_shipping_document"
+        params = self._build_common_params(path)
+        
+        # Build order list for request
+        order_list = []
+        for pkg in package_list:
+            order_list.append({
+                "order_sn": order_sn,
+                "package_number": pkg.get("package_number", order_sn)
+            })
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.BASE_URL}{path}",
+                    params=params,
+                    json={
+                        "order_list": order_list,
+                        "document_type": "THERMAL_AIR_WAYBILL",  # A6 thermal label
+                    }
+                )
+                self._log_api_call("POST", path, response.status_code)
+                data = response.json()
+                
+                if data.get("error"):
+                    logger.error(f"Shopee get_shipping_label error for {order_sn}: {data.get('message')}")
+                    return None
+                
+                # Response contains base64 encoded PDF or URL
+                result = data.get("response", {})
+                
+                # Check for warning (some orders may not have labels ready)
+                if result.get("warning"):
+                    logger.warning(f"Shopee shipping label warning for {order_sn}: {result.get('warning')}")
+                
+                # Return the file content or URL
+                return result.get("file", {}).get("url")
+                
+        except Exception as e:
+            logger.error(f"Error fetching shipping label for {order_sn}: {e}")
             return None
 
     def extract_pickup_time_from_tracking(self, tracking_info: Dict) -> Optional[datetime]:

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service>
+  <id>WeOrderBackend</id>
+  <name>WeOrder Backend</name>
+  <description>WeOrder Backend API Service - Order Management System</description>
+  <executable>D:\AI_WORKSPACE\AI_Project\Github\weorder\.venv\Scripts\python.exe</executable>
+  <arguments>-m uvicorn main:app --host 0.0.0.0 --port 9203</arguments>
+  <workingdirectory>D:\AI_WORKSPACE\AI_Project\Github\weorder</workingdirectory>
+  
+  <!-- Logging -->
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>3</keepFiles>
+  </log>
+  <logpath>D:\AI_WORKSPACE\AI_Project\Github\weorder\logs</logpath>
+  
+  <!-- Auto-restart on failure -->
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="20 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  
+  <!-- Startup -->
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>false</delayedAutoStart>
+  
+  <!-- Environment Variables -->
+  <env name="APP_PORT" value="9203"/>
+  <env name="PYTHONUNBUFFERED" value="1"/>
+  
+  <!-- Stop timeout -->
+  <stoptimeout>15 sec</stoptimeout>
+</service>

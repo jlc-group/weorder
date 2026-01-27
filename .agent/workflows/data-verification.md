@@ -19,11 +19,12 @@ Before saying "เจอแล้ว", "แก้แล้ว", or "เสร็
 # Check sync status
 curl -s http://localhost:9203/api/sync/status
 
-# Check webhook logs
-PGPASSWORD='sZ3vlr2tzjz5x#T8' psql -h 192.168.0.41 -U weorder_user -d weorder_db -c "SELECT platform, COUNT(*), MAX(received_at), COUNT(*) FILTER (WHERE processed = false) as unprocessed FROM webhook_log GROUP BY platform;"
+# Check webhook logs (ใช้ credentials จาก .env)
+# DB_HOST=192.168.0.41, DB_PASSWORD ดูจาก .env
+PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -U weorder_user -d weorder_db -c "SELECT platform, COUNT(*), MAX(received_at), COUNT(*) FILTER (WHERE processed = false) as unprocessed FROM webhook_log GROUP BY platform;"
 
 # Check order counts
-PGPASSWORD='sZ3vlr2tzjz5x#T8' psql -h 192.168.0.41 -U weorder_user -d weorder_db -c "SELECT channel_code, status_raw, COUNT(*) FROM order_header GROUP BY channel_code, status_raw ORDER BY channel_code, COUNT(*) DESC;"
+PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -U weorder_user -d weorder_db -c "SELECT channel_code, status_raw, COUNT(*) FROM order_header GROUP BY channel_code, status_raw ORDER BY channel_code, COUNT(*) DESC;"
 ```
 
 ## 3. Before Claiming "Fixed":

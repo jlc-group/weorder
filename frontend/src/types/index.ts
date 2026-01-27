@@ -39,6 +39,9 @@ export interface Product {
     standard_price: number;
     image_url?: string;
     is_active: boolean;
+    stock_quantity?: number;  // Available stock
+    on_hand?: number;         // Total on hand
+    reserved?: number;        // Reserved for orders
 }
 
 export interface StockSummary {
@@ -76,6 +79,12 @@ export interface Promotion {
     is_active: boolean;
     start_at?: string;
     end_at?: string;
+    description?: string;
+    discount_value?: number;
+    min_order_amount?: number;
+    max_discount?: number;
+    applicable_skus?: string[];
+    channels?: string[];
 }
 
 export interface ApiResponse<T> {

@@ -78,12 +78,10 @@ class StockService:
     
     @staticmethod
     def add_stock_movement(db: Session, movement_data: StockMovementCreate, created_by: Optional[UUID] = None, created_at_override: Optional[datetime] = None) -> StockLedger:
-        """Add stock movement
-        
-        Args:
-            created_at_override: If provided, use this as created_at instead of database default (now()).
-                                 Useful for syncing historical data with correct dates.
-        """
+        """Add stock movement and update balance"""
+        from app.models.stock import StockBalance
+
+        # 1. Create Ledger Entry
         movement = StockLedger(
             warehouse_id=movement_data.warehouse_id,
             product_id=movement_data.product_id,
@@ -95,11 +93,46 @@ class StockService:
             created_by=created_by
         )
         
-        # Override created_at if provided (for historical sync accuracy)
+        # Override created_at if provided (for historical sync)
         if created_at_override:
             movement.created_at = created_at_override
         
         db.add(movement)
+        
+        # 2. Update Stock Balance (Snapshot)
+        # Find existing balance record
+        balance_query = db.query(StockBalance).filter(
+            StockBalance.warehouse_id == movement_data.warehouse_id,
+            StockBalance.product_id == movement_data.product_id,
+            StockBalance.location_id == movement_data.location_id
+        )
+        balance = balance_query.first()
+        
+        if not balance:
+            balance = StockBalance(
+                warehouse_id=movement_data.warehouse_id,
+                product_id=movement_data.product_id,
+                location_id=movement_data.location_id,
+                quantity=0,
+                reserved_quantity=0
+            )
+            db.add(balance)
+            
+        # Update Quantity
+        if movement_data.movement_type in ["IN", "RELEASE"]:
+            balance.quantity += movement_data.quantity
+        elif movement_data.movement_type in ["OUT", "RESERVE"]:
+            balance.quantity -= movement_data.quantity
+        elif movement_data.movement_type == "ADJUST":
+             # ADJUST adds the signed quantity (can be negative)
+            balance.quantity += movement_data.quantity
+            
+        # Update Reserved
+        if movement_data.movement_type == "RESERVE":
+            balance.reserved_quantity += movement_data.quantity
+        elif movement_data.movement_type == "RELEASE":
+            balance.reserved_quantity -= movement_data.quantity
+            
         db.commit()
         db.refresh(movement)
         return movement
@@ -370,4 +403,51 @@ class StockService:
         order.status_normalized = "RETURNED"
         
         db.commit()
+        return True
+
+    @staticmethod
+    def create_location(db: Session, data: dict):
+        """Create new location"""
+        from app.models.stock import Location
+        location = Location(**data)
+        db.add(location)
+        db.commit()
+        db.refresh(location)
+        return location
+
+    @staticmethod
+    def get_locations(db: Session, warehouse_id: UUID):
+        """Get locations by warehouse"""
+        from app.models.stock import Location
+        return db.query(Location).filter(
+            Location.warehouse_id == warehouse_id,
+            Location.is_active == True
+        ).all()
+
+    @staticmethod
+    def transfer_stock(db: Session, from_wh: UUID, to_wh: UUID, product_id: UUID, qty: int, user_id: UUID = None):
+        """Transfer stock between warehouses"""
+        from app.schemas.stock import StockMovementCreate
+        
+        # OUT from source
+        out_move = StockMovementCreate(
+            warehouse_id=from_wh,
+            product_id=product_id,
+            movement_type="OUT",
+            quantity=qty,
+            reference_type="TRANSFER",
+            note=f"Transfer to {to_wh}"
+        )
+        StockService.add_stock_movement(db, out_move, user_id)
+        
+        # IN to destination
+        in_move = StockMovementCreate(
+            warehouse_id=to_wh,
+            product_id=product_id,
+            movement_type="IN",
+            quantity=qty,
+            reference_type="TRANSFER",
+            note=f"Transfer from {from_wh}"
+        )
+        StockService.add_stock_movement(db, in_move, user_id)
         return True

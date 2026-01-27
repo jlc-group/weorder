@@ -242,3 +242,27 @@ def webhook_status():
             "tiktok": "/api/webhooks/tiktok",
         }
     }
+
+
+@webhook_router.get("/processor/status")
+def webhook_processor_status(db: Session = Depends(get_db)):
+    """Get webhook processor status"""
+    from app.services.webhook_processor import get_processor
+    from sqlalchemy import func
+    from app.models.integration import WebhookLog
+    
+    processor = get_processor()
+    status = processor.get_status()
+    
+    # Get pending counts
+    pending = db.query(
+        WebhookLog.platform,
+        func.count(WebhookLog.id)
+    ).filter(
+        WebhookLog.processed == False
+    ).group_by(WebhookLog.platform).all()
+    
+    status["pending"] = {p: c for p, c in pending}
+    status["total_pending"] = sum(c for _, c in pending)
+    
+    return status

@@ -187,21 +187,33 @@ class LazadaClient(BasePlatformClient):
         status: Optional[str] = None,
         cursor: Optional[str] = None,
         page_size: int = 50,
+        use_update_time: bool = False,  # NEW: Support update_time for incremental sync
     ) -> Dict[str, Any]:
         """
         Get list of orders from Lazada
         API: /orders/get
         """
+        # Use update_time for incremental sync (catches status changes)
+        sort_field = "updated_at" if use_update_time else "created_at"
+        
         params = {
             "limit": str(min(page_size, 100)),
-            "sort_by": "created_at",
+            "sort_by": sort_field,
             "sort_direction": "DESC",
         }
         
-        if time_from:
-            params["created_after"] = time_from.strftime("%Y-%m-%dT%H:%M:%S+07:00")
-        if time_to:
-            params["created_before"] = time_to.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+        # Choose time filter based on sync mode
+        if use_update_time:
+            if time_from:
+                params["update_after"] = time_from.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+            if time_to:
+                params["update_before"] = time_to.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+        else:
+            if time_from:
+                params["created_after"] = time_from.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+            if time_to:
+                params["created_before"] = time_to.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+        
         if status:
             params["status"] = status
         if cursor:
@@ -222,17 +234,21 @@ class LazadaClient(BasePlatformClient):
         Get detailed order information
         API: /order/get + /order/items/get
         """
-        data = await self._make_request("/order/get", params={"order_id": order_id})
-        
-        # Also fetch items and attach them to the order data
         try:
-            items = await self.get_order_items(order_id)
-            if items:
-                data["order_items"] = items
-        except Exception as e:
-            logger.error(f"Error fetching items for Lazada order {order_id}: {e}")
+            data = await self._make_request("/order/get", params={"order_id": order_id})
             
-        return data
+            # Also fetch items and attach them to the order data
+            try:
+                items = await self.get_order_items(order_id)
+                if items:
+                    data["order_items"] = items
+            except Exception as e:
+                logger.error(f"Error fetching items for Lazada order {order_id}: {e}")
+                
+            return data
+        except Exception as e:
+            logger.error(f"Error fetching Lazada order detail {order_id}: {e}")
+            return None
     
     async def get_order_items(self, order_id: str) -> list:
         """
@@ -293,6 +309,14 @@ class LazadaClient(BasePlatformClient):
         if status_norm in ["SHIPPED", "DELIVERED", "COMPLETED"]:
             shipped_at = updated_at
 
+        # Extract courier and tracking from order_items (Lazada stores in order_items, not top-level)
+        courier = None
+        tracking_number = None
+        if raw_order.get("order_items"):
+            first_item = raw_order["order_items"][0]
+            courier = first_item.get("shipment_provider")
+            tracking_number = first_item.get("tracking_code") or first_item.get("tracking_number")
+
         return NormalizedOrder(
             platform_order_id=str(raw_order.get("order_id", "")),
             platform="lazada",
@@ -316,6 +340,9 @@ class LazadaClient(BasePlatformClient):
             total_amount=float(raw_order.get("price", 0)),
             
             payment_method=raw_order.get("payment_method", ""),
+
+            tracking_number=tracking_number,
+            courier=courier,
             
             order_created_at=datetime.fromisoformat(raw_order["created_at"].replace("Z", "+00:00")) if raw_order.get("created_at") else None,
             order_updated_at=updated_at,
@@ -355,6 +382,41 @@ class LazadaClient(BasePlatformClient):
             "timestamp": payload.get("timestamp"),
             "data": payload.get("data", {}),
         }
+
+    async def get_shipping_label(self, order_id: str) -> Optional[str]:
+        """
+        Get shipping label/document URL for an order
+        API: /order/document/get
+        
+        Returns: URL to download the shipping label PDF
+        """
+        try:
+            # First get order items to find package_id
+            items = await self.get_order_items(order_id)
+            if not items:
+                logger.error(f"No items found for Lazada order {order_id}")
+                return None
+            
+            # Get tracking code or package_id from first item
+            first_item = items[0] if isinstance(items, list) else items
+            order_item_ids = [str(first_item.get("order_item_id"))]
+            
+            # Get shipping document
+            params = {
+                "order_item_ids": ",".join(order_item_ids),
+                "doc_type": "shippingLabel",  # or "invoice"
+            }
+            
+            data = await self._make_request("/order/document/get", params=params)
+            
+            # Response contains file object with URL
+            if data:
+                return data.get("document", {}).get("file") or data.get("file")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error fetching shipping label for Lazada order {order_id}: {e}")
+            return None
 
     async def get_order_trace(self, order_id: str) -> Optional[Dict]:
         """

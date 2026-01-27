@@ -272,7 +272,30 @@ class FinanceSyncService:
         amount_val = item.get("amount") or 0
         amount = Decimal(str(amount_val))
         
-        tx_type = item.get("transaction_type") or "UNKNOWN"
+        raw_tx_type = item.get("transaction_type") or "UNKNOWN"
+        
+        # Normalize transaction types for Lazada
+        # Map payout-related types to ESCROW_RELEASE for เงินเข้าบัญชี calculation
+        LAZADA_TX_TYPE_MAP = {
+            # Payout types -> ESCROW_RELEASE
+            "payout": "ESCROW_RELEASE",
+            "payment": "ESCROW_RELEASE",
+            "remittance": "ESCROW_RELEASE",
+            "settlement": "ESCROW_RELEASE",
+            "order_payment": "ESCROW_RELEASE",
+            # Fee types -> Keep original or map to specific types
+            "commission": "COMMISSION_FEE",
+            "service_fee": "SERVICE_FEE",
+            "shipping": "SHIPPING_FEE",
+            "shipping_fee": "SHIPPING_FEE",
+            "transaction_fee": "TRANSACTION_FEE",
+            "adjustment": "ADJUSTMENT",
+            # Revenue types
+            "item_price": "ITEM_PRICE",
+            "order": "ITEM_PRICE",
+        }
+        
+        tx_type = LAZADA_TX_TYPE_MAP.get(raw_tx_type.lower(), raw_tx_type.upper())
         
         # Date
         date_str = item.get("transaction_date")
@@ -413,6 +436,12 @@ class FinanceSyncService:
             add_tx("ITEM_PRICE", float(deal_price))
         elif original_price and float(original_price) != 0:
             add_tx("ITEM_PRICE", float(original_price))
+        
+        # ESCROW_RELEASE - Net payout amount (for "เงินเข้าบัญชี" calculation)
+        # This is the actual amount that gets released to seller's wallet
+        escrow_amount = summary.get("escrow_amount") or order_income.get("escrow_amount")
+        if escrow_amount and float(escrow_amount) != 0:
+            add_tx("ESCROW_RELEASE", float(escrow_amount))
             
         self.db.commit()
 

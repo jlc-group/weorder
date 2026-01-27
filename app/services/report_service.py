@@ -14,14 +14,18 @@ from app.models.label_log import LabelPrintLog
 class ReportService:
     
     @staticmethod
-    def get_daily_outbound_stats(db: Session, date: datetime.date, warehouse_id: str = None, cutoff_hour: int = 0) -> Dict[str, Any]:
+    def get_daily_outbound_stats(db: Session, date: datetime.date, warehouse_id: str = None, cutoff_hour: int = 0, date_mode: str = "collection") -> Dict[str, Any]:
         """
         Get statistics of items shipped on a specific date.
-        Uses shipped_at field to determine the shipping date.
-        Date is based on Thai timezone (shipped_at date in Thai time).
+        
+        Args:
+            date_mode: 
+                - "collection" (default): Uses collection_time (courier pickup)
+                - "rts": Uses rts_time (ready to ship / packing date)
         """
         from app.models.mapping import PlatformListing
         from app.models.product import Product
+        from sqlalchemy import or_
 
         # Timezone Handling
         try:
@@ -29,12 +33,11 @@ class ReportService:
         except:
             tz = ZoneInfo("Asia/Bangkok")
 
-        # shipped_at is already stored in Thai timezone
-        # Query using date range directly (no UTC conversion needed)
+        # Query using date range
         start_dt = datetime.combine(date, time.min)
         end_dt = datetime.combine(date, time.max)
         
-        # 1. Fetch Orders + Items anchored by shipped_at
+        # 1. Fetch Orders + Items
         query = db.query(
             OrderHeader.id,
             OrderHeader.channel_code,
@@ -43,11 +46,29 @@ class ReportService:
             OrderItem.quantity
         ).join(OrderHeader, OrderItem.order_id == OrderHeader.id)
         
-        query = query.filter(
-            OrderHeader.status_normalized.notin_(['CANCELLED', 'RETURNED']),
-            OrderHeader.shipped_at >= start_dt,
-            OrderHeader.shipped_at <= end_dt
-        )
+        # Apply date filter based on mode
+        if date_mode == "rts":
+            # RTS mode: use rts_time (packing/label print date)
+            query = query.filter(
+                OrderHeader.status_normalized.notin_(['CANCELLED', 'RETURNED']),
+                or_(
+                    # Primary: rts_time
+                    (OrderHeader.rts_time >= start_dt) & (OrderHeader.rts_time <= end_dt),
+                    # Fallback: collection_time when rts_time is null
+                    (OrderHeader.rts_time.is_(None)) & (OrderHeader.collection_time >= start_dt) & (OrderHeader.collection_time <= end_dt)
+                )
+            )
+        else:
+            # Default: collection mode (courier pickup)
+            query = query.filter(
+                OrderHeader.status_normalized.notin_(['CANCELLED', 'RETURNED']),
+                or_(
+                    # Primary: courier collection_time
+                    (OrderHeader.collection_time >= start_dt) & (OrderHeader.collection_time <= end_dt),
+                    # Fallback: shipped_at when collection_time is null
+                    (OrderHeader.collection_time.is_(None)) & (OrderHeader.shipped_at >= start_dt) & (OrderHeader.shipped_at <= end_dt)
+                )
+            )
         
         if warehouse_id:
             try:
@@ -154,7 +175,9 @@ class ReportService:
             "items": items_data,
             "platforms": final_platform_stats,
             # Add label stats for accurate "packed" counts
-            "label_stats": ReportService.get_label_stats(db, date)
+            "label_stats": ReportService.get_label_stats(db, date),
+            # Data quality note
+            "data_note": "TikTok uses courier collection_time. Shopee uses pickup_done_time. Lazada falls back to shipped_at.",
         }
 
     @staticmethod

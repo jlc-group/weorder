@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Layout from '../components/Layout';
 import PrintQueue from '../components/PrintQueue';
+import ScanToPackModal from '../components/ScanToPackModal';
 import api from '../api/client';
 import type { Order } from '../types';
 
@@ -33,6 +34,16 @@ const Packing: React.FC = () => {
         to_pickup: 0,       // READY_TO_SHIP
         total: 0
     });
+
+    // Platform Summary for BigSeller-style header
+    interface PlatformSummary {
+        platform: string;
+        new_orders: number;
+        in_process: number;
+        to_pickup: number;
+        total: number;
+    }
+    const [platformSummary, setPlatformSummary] = useState<PlatformSummary[]>([]);
 
     // Pre-pack Batch Creation State
     const [showCreateBatchModal, setShowCreateBatchModal] = useState(false);
@@ -73,8 +84,16 @@ const Packing: React.FC = () => {
     const [isSyncing, setIsSyncing] = useState(false);
     const [syncStatus, setSyncStatus] = useState<string | null>(null);
 
+    // Manifest Modal State
+    const [showManifestModal, setShowManifestModal] = useState(false);
+    const [openManifests, setOpenManifests] = useState<{ id: string, manifest_number: string, courier: string }[]>([]);
+    const [selectedManifestId, setSelectedManifestId] = useState('');
+
     // Print Queue state
     const [showPrintQueue, setShowPrintQueue] = useState(false);
+
+    // Scan Mode state
+    const [showScanModal, setShowScanModal] = useState(false);
 
     // Load status counts for BigSeller-style tabs
     const loadStatusCounts = async () => {
@@ -87,6 +106,16 @@ const Packing: React.FC = () => {
         }
     };
 
+    // Load platform summary for BigSeller-style platform badges
+    const loadPlatformSummary = async () => {
+        try {
+            const { data } = await api.get('/orders/platform-summary');
+            setPlatformSummary(data.platforms || []);
+        } catch (e) {
+            console.error('Failed to load platform summary:', e);
+        }
+    };
+
     // Trigger sync from platforms
     const triggerPlatformSync = async () => {
         if (isSyncing) return;
@@ -96,8 +125,8 @@ const Packing: React.FC = () => {
 
         try {
             // Trigger sync
-            const { data } = await api.post('/sync/trigger');
-            setSyncStatus(`เริ่ม sync แล้ว (ID: ${data.sync_id})`);
+            const { data: _syncData } = await api.post('/sync/trigger');
+            setSyncStatus('🔄 กำลัง Sync... กรุณารอสักครู่');
 
             // Poll for completion
             let attempts = 0;
@@ -180,6 +209,7 @@ const Packing: React.FC = () => {
         loadSkuSummary();
         loadPendingCollectionCount();
         loadStatusCounts();
+        loadPlatformSummary();
     }, []);
 
     // Reload when activeTab changes
@@ -609,56 +639,7 @@ const Packing: React.FC = () => {
         window.open(`http://localhost:9203/api/orders/pick-list?ids=${ids}`, '_blank');
     };
 
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const printThermalSummary = () => {
-        if (!hasSelection) return;
-        if (selectAllMatching) {
-            alert("Thermal Print รองรับการพิมพ์เฉพาะรายการที่โหลดมาแล้วเท่านั้น");
-            return;
-        }
-        const ids = Array.from(selectedForPrint).join(',');
-        window.open(`http://localhost:9203/api/orders/sku-summary-thermal?ids=${ids}`, '_blank');
-    };
 
-    // Batch mark all selected as packed
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const markAllPacked = async () => {
-        if (!hasSelection) return;
-
-        const count = selectAllMatching ? totalOrders : selectedForPrint.size;
-        const confirmed = window.confirm(`ต้องการเปลี่ยนสถานะเป็น 'PACKING' จำนวน ${count.toLocaleString()} รายการ?`);
-        if (!confirmed) return;
-
-        setLoading(true);
-        try {
-            const payload: Record<string, string | string[]> = { status: 'PACKING' };
-
-            if (selectAllMatching && selectedSkus.size === 0) {
-                // Use Filters
-                payload.filter_status = 'PAID,PACKING';
-                if (selectedPlatform !== 'ALL') payload.filter_channel = selectedPlatform;
-                if (searchQuery) payload.search = searchQuery;
-            } else {
-                // Use IDs
-                payload.ids = Array.from(selectedForPrint);
-            }
-
-            const { data } = await api.post(`/orders/batch-status`, payload);
-
-            if (data.success) {
-                // Refresh queue
-                loadQueue(1);
-                setSelectAllMatching(false);
-                setSelectedForPrint(new Set());
-                alert(`สำเร็จ: ${data.message}`);
-            }
-        } catch (e) {
-            console.error('Failed to mark orders as packed:', e);
-            alert('เกิดข้อผิดพลาดในการอัปเดตสถานะ');
-        } finally {
-            setLoading(false);
-        }
-    };
 
     // RTS (Ready to Ship)
     const handleRTS = async () => {
@@ -865,7 +846,46 @@ const Packing: React.FC = () => {
     const handlePrintFromQueue = (orderIds: string[]) => {
         if (orderIds.length === 0) return;
         const idsParam = orderIds.join(',');
-        window.open(`/api/orders/batch-labels?format=pdf&ids=${idsParam}`, '_blank');
+        window.open(`http://localhost:9203/api/orders/batch-labels?format=pdf&ids=${idsParam}`, '_blank');
+    };
+
+    // Manifest Logic
+    const loadOpenManifests = async () => {
+        try {
+            const { data } = await api.get('/manifests?status=OPEN');
+            setOpenManifests(data.manifests || []);
+        } catch (e) {
+            console.error('Failed to load manifests:', e);
+            alert('ไม่สามารถโหลดรายการ Manifest ได้');
+        }
+    };
+
+    const handleOpenManifestModal = () => {
+        if (!hasSelection) return;
+        loadOpenManifests();
+        setShowManifestModal(true);
+    };
+
+    const handleConfirmAddToManifest = async () => {
+        if (!selectedManifestId) {
+            alert('กรุณาเลือก Manifest');
+            return;
+        }
+
+        const ids = Array.from(selectedForPrint);
+        try {
+            const { data } = await api.post(`/manifests/${selectedManifestId}/add-orders`, { order_ids: ids });
+            if (data.success) {
+                alert(`เพิ่ม ${data.added} รายการลงใน Manifest เรียบร้อยแล้ว`);
+                setShowManifestModal(false);
+                setSelectedForPrint(new Set());
+                // Optionally move status or just refresh?
+                // Manifest addition doesn't necessarily change order status (usually stay Ready to Ship until pickup)
+            }
+        } catch (e) {
+            console.error('Failed to add to manifest:', e);
+            alert('เกิดข้อผิดพลาด');
+        }
     };
 
     const getChannelBadge = (channel: string) => {
@@ -899,6 +919,12 @@ const Packing: React.FC = () => {
                         </span>
                     )}
                     <button
+                        className="btn btn-primary"
+                        onClick={() => setShowScanModal(true)}
+                    >
+                        <i className="bi bi-upc-scan me-1"></i> Scan to Pack
+                    </button>
+                    <button
                         className="btn btn-success"
                         onClick={triggerPlatformSync}
                         disabled={isSyncing}
@@ -920,6 +946,47 @@ const Packing: React.FC = () => {
                 </div>
             }
         >
+            {/* Platform Summary Badges (BigSeller-Style) */}
+            {platformSummary.length > 0 && (
+                <div className="d-flex flex-wrap gap-2 mb-3">
+                    <button
+                        className={`btn btn-sm ${selectedPlatform === 'ALL' ? 'btn-dark' : 'btn-outline-dark'}`}
+                        onClick={() => setSelectedPlatform('ALL')}
+                    >
+                        <i className="bi bi-globe me-1"></i>
+                        ทั้งหมด
+                        <span className="badge bg-light text-dark ms-1">
+                            {platformSummary.reduce((sum, p) => sum + p.total, 0).toLocaleString()}
+                        </span>
+                    </button>
+                    {platformSummary.map(p => (
+                        <button
+                            key={p.platform}
+                            className={`btn btn-sm ${selectedPlatform.toLowerCase() === p.platform
+                                ? p.platform === 'tiktok' ? 'btn-dark'
+                                    : p.platform === 'shopee' ? 'btn-warning'
+                                        : p.platform === 'lazada' ? 'btn-primary'
+                                            : 'btn-secondary'
+                                : p.platform === 'tiktok' ? 'btn-outline-dark'
+                                    : p.platform === 'shopee' ? 'btn-outline-warning'
+                                        : p.platform === 'lazada' ? 'btn-outline-primary'
+                                            : 'btn-outline-secondary'
+                                }`}
+                            onClick={() => setSelectedPlatform(p.platform)}
+                        >
+                            {p.platform === 'tiktok' && <i className="bi bi-tiktok me-1"></i>}
+                            {p.platform === 'shopee' && <i className="bi bi-shop me-1"></i>}
+                            {p.platform === 'lazada' && <i className="bi bi-bag me-1"></i>}
+                            {p.platform.charAt(0).toUpperCase() + p.platform.slice(1)}
+                            <span className={`badge ms-1 ${p.platform === 'shopee' ? 'bg-dark text-white' : 'bg-light text-dark'
+                                }`}>
+                                {p.total.toLocaleString()}
+                            </span>
+                        </button>
+                    ))}
+                </div>
+            )}
+
             {/* BigSeller-Style Tabs */}
             <ul className="nav nav-pills mb-3">
                 <li className="nav-item">
@@ -965,9 +1032,16 @@ const Packing: React.FC = () => {
                     <div className="col-6 col-md-3">
                         <div className="card border-0 shadow-sm h-100 bg-warning bg-opacity-10">
                             <div className="card-body text-center py-3">
-                                <div className="fs-2 fw-bold text-warning">{totalOrders.toLocaleString()}</div>
+                                <div className="fs-2 fw-bold text-warning">
+                                    {(selectedSkus.size > 0 || selectedSkuQty.size > 0)
+                                        ? filteredOrders.length.toLocaleString()
+                                        : totalOrders.toLocaleString()}
+                                </div>
                                 <div className="text-muted small">
-                                    <i className="bi bi-hourglass-split me-1"></i>รอแพ็ค (ทั้งหมด)
+                                    <i className="bi bi-hourglass-split me-1"></i>
+                                    {(selectedSkus.size > 0 || selectedSkuQty.size > 0)
+                                        ? 'ตามตัวกรอง'
+                                        : 'รอแพ็ค (ทั้งหมด)'}
                                 </div>
                             </div>
                         </div>
@@ -975,9 +1049,9 @@ const Packing: React.FC = () => {
                     <div className="col-6 col-md-3">
                         <div className="card border-0 shadow-sm h-100">
                             <div className="card-body text-center py-3">
-                                <div className="fs-2 fw-bold text-primary">{orders.length.toLocaleString()}</div>
+                                <div className="fs-2 fw-bold text-primary">{visibleOrders.length.toLocaleString()}</div>
                                 <div className="text-muted small">
-                                    <i className="bi bi-file-earmark-text me-1"></i>หน้า {page} (แสดง)
+                                    <i className="bi bi-file-earmark-text me-1"></i>แสดงอยู่
                                 </div>
                             </div>
                         </div>
@@ -1353,6 +1427,7 @@ const Packing: React.FC = () => {
                                         </th>
                                         <th>รหัสออเดอร์</th>
                                         <th>ช่องทาง</th>
+                                        <th>เวลาสั่ง</th>
                                         <th>ลูกค้า</th>
                                         <th>รายการ</th>
                                         <th>สถานะ</th>
@@ -1363,7 +1438,7 @@ const Packing: React.FC = () => {
                                     {/* Select All Banner */}
                                     {selectedForPrint.size === filteredOrders.length && totalOrders > filteredOrders.length && selectedSkus.size === 0 && !loading && (
                                         <tr>
-                                            <td colSpan={7} className="p-0 border-0">
+                                            <td colSpan={8} className="p-0 border-0">
                                                 <div className="alert alert-info rounded-0 mb-0 text-center py-2 border-start-0 border-end-0">
                                                     <span>เลือกรายการทั้งหมดในหน้านี้ {filteredOrders.length} รายการ </span>
                                                     {!selectAllMatching ? (
@@ -1391,14 +1466,14 @@ const Packing: React.FC = () => {
 
                                     {loading ? (
                                         <tr>
-                                            <td colSpan={7} className="text-center py-5">
+                                            <td colSpan={8} className="text-center py-5">
                                                 <div className="spinner-border text-primary"></div>
                                                 <div className="mt-2">กำลังโหลด...</div>
                                             </td>
                                         </tr>
                                     ) : visibleOrders.length === 0 ? (
                                         <tr>
-                                            <td colSpan={7} className="text-center text-muted py-5">
+                                            <td colSpan={8} className="text-center text-muted py-5">
                                                 <i className="bi bi-inbox fs-1 d-block mb-2"></i>
                                                 {searchQuery || selectedSkus.size > 0
                                                     ? 'ไม่พบรายการที่ตรงกับตัวกรอง'
@@ -1430,6 +1505,16 @@ const Packing: React.FC = () => {
                                                     </a>
                                                 </td>
                                                 <td>{getChannelBadge(order.channel_code)}</td>
+                                                <td>
+                                                    {order.order_datetime ? (
+                                                        <div className="small">
+                                                            <div>{new Date(order.order_datetime).toLocaleDateString('th-TH', { day: '2-digit', month: 'short' })}</div>
+                                                            <div className="text-muted">{new Date(order.order_datetime).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}</div>
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-muted">-</span>
+                                                    )}
+                                                </td>
                                                 <td>
                                                     <div>{order.customer_name || '-'}</div>
                                                     <small className="text-muted">{order.customer_phone || ''}</small>
@@ -1589,7 +1674,15 @@ const Packing: React.FC = () => {
                                                     onClick={handleMoveToShipped}
                                                 >
                                                     <i className="bi bi-check-all me-1"></i>
+                                                    <i className="bi bi-check-all me-1"></i>
                                                     Move to Shipped
+                                                </button>
+                                                <button
+                                                    className="btn btn-warning text-dark"
+                                                    onClick={handleOpenManifestModal}
+                                                >
+                                                    <i className="bi bi-file-earmark-spreadsheet me-1"></i>
+                                                    Add to Manifest
                                                 </button>
                                             </>
                                         )}
@@ -1855,6 +1948,64 @@ const Packing: React.FC = () => {
                 isOpen={showPrintQueue}
                 onClose={() => setShowPrintQueue(false)}
                 onPrintAll={handlePrintFromQueue}
+            />
+
+            {/* Add to Manifest Modal */}
+            {showManifestModal && (
+                <div className="modal show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                    <div className="modal-dialog">
+                        <div className="modal-content">
+                            <div className="modal-header">
+                                <h5 className="modal-title">เพิ่มรายการลงใน Manifest</h5>
+                                <button className="btn-close" onClick={() => setShowManifestModal(false)}></button>
+                            </div>
+                            <div className="modal-body">
+                                <div className="alert alert-info">
+                                    กำลังจะเพิ่ม {selectedForPrint.size} รายการ
+                                </div>
+                                <div className="mb-3">
+                                    <label className="form-label">เลือก Manifest (ที่เปิดอยู่)</label>
+                                    <select
+                                        className="form-select"
+                                        value={selectedManifestId}
+                                        onChange={e => setSelectedManifestId(e.target.value)}
+                                    >
+                                        <option value="">-- กรุณาเลือก --</option>
+                                        {openManifests.map(m => (
+                                            <option key={m.id} value={m.id}>
+                                                {m.manifest_number} ({m.courier})
+                                            </option>
+                                        ))}
+                                    </select>
+                                    {openManifests.length === 0 && (
+                                        <div className="form-text text-danger">
+                                            ไม่พบ Manifest ที่เปิดอยู่ กรุณาสร้างใหม่ที่เมนู "ใบส่งสินค้า"
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            <div className="modal-footer">
+                                <button className="btn btn-secondary" onClick={() => setShowManifestModal(false)}>ยกเลิก</button>
+                                <button className="btn btn-primary" onClick={handleConfirmAddToManifest} disabled={!selectedManifestId}>
+                                    ยืนยัน
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Scan to Pack Modal */}
+            <ScanToPackModal
+                isOpen={showScanModal}
+                onClose={() => setShowScanModal(false)}
+                onOrderPacked={() => {
+                    loadStatusCounts(); // Update counts
+                    // If viewing packing list, refresh?
+                    if (activeTab === 'new_orders' || activeTab === 'in_process') {
+                        loadQueue(page);
+                    }
+                }}
             />
         </Layout>
     );

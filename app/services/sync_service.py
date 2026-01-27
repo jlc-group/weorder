@@ -2,7 +2,7 @@
 Sync Service - Order synchronization and normalization
 """
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from starlette.concurrency import run_in_threadpool
@@ -95,9 +95,9 @@ class OrderSyncService:
             
             # Default time range: last 7 days (balance between coverage and performance)
             if not time_from:
-                time_from = datetime.utcnow() - timedelta(days=7)
+                time_from = datetime.now(timezone.utc) - timedelta(days=7)
             if not time_to:
-                time_to = datetime.utcnow()
+                time_to = datetime.now(timezone.utc)
             
             # Fetch orders with pagination
             cursor = None
@@ -107,24 +107,38 @@ class OrderSyncService:
             platform_time_from = time_from
             if config.platform == 'shopee':
                 # Shopee API limits to 15 days
-                max_days_back = datetime.utcnow() - timedelta(days=14)
+                max_days_back = datetime.now(timezone.utc) - timedelta(days=14)
                 if platform_time_from < max_days_back:
                     platform_time_from = max_days_back
             
-            # Determine status filters based on platform
+            # Determine status filters and sync mode based on platform
             status_filters = []
+            use_update_time = True  # INCREMENTAL SYNC for ALL platforms now
+            
+            # INCREMENTAL SYNC MODE FOR ALL PLATFORMS:
+            # - Use update_time filter instead of create_time
+            # - This catches orders that CHANGED status, not just new orders
+            # - 2 hour lookback is sufficient since webhooks handle real-time
+            
+            # Use last_sync_at if available, otherwise 2 hours
+            if config.last_sync_at:
+                # Add 5 min overlap to avoid missing orders at boundary
+                last_sync = config.last_sync_at
+                if last_sync.tzinfo is None:
+                    last_sync = last_sync.replace(tzinfo=timezone.utc)
+                platform_time_from = last_sync - timedelta(minutes=5)
+            else:
+                # First sync or no last_sync_at: use 2 hours
+                platform_time_from = datetime.now(timezone.utc) - timedelta(hours=2)
+            
+            logger.info(f"{config.platform.upper()} INCREMENTAL sync: from {platform_time_from}")
+            
             if config.platform == 'tiktok':
-                # Fetch ONLY active orders (not yet shipped/delivered)
-                status_filters = ['AWAITING_SHIPMENT', 'UNPAID', 'ON_HOLD', 'AWAITING_COLLECTION', 'IN_TRANSIT']
-                
-                # Use 3 days lookback (same as scheduler config)
-                # This is safe because we filter by active statuses only
-                platform_time_from = datetime.utcnow() - timedelta(days=3)
-                
+                status_filters = [None]  # No status filter - get all changed orders
             elif config.platform == 'shopee':
-                status_filters = ['READY_TO_SHIP', 'PROCESSED']
+                status_filters = ['READY_TO_SHIP', 'PROCESSED', 'SHIPPED']
             elif config.platform == 'lazada':
-                status_filters = ['pending', 'ready_to_ship']
+                status_filters = ['pending', 'ready_to_ship', 'shipped']
             else:
                 status_filters = [None]  # No filter
             
@@ -134,13 +148,14 @@ class OrderSyncService:
                 has_more = True
                 
                 while has_more:
-                    # Async IO
+                    # Async IO - pass use_update_time for incremental mode
                     result = await client.get_orders(
                         time_from=platform_time_from,
                         time_to=time_to,
                         status=status_filter,
                         cursor=cursor,
                         page_size=50,
+                        use_update_time=use_update_time,
                     )
                     
                     orders = result.get("orders", [])
@@ -497,6 +512,14 @@ class OrderSyncService:
                 existing.collection_time = pickup_ts
                 updated = True
         
+        # Lazada: No collection_time in API, fall back to shipped_at
+        elif normalized.platform == "lazada":
+            # Lazada's raw_payload does not include collection_time
+            # Use shipped_at as best available proxy for courier pickup
+            if existing.shipped_at and not existing.collection_time:
+                existing.collection_time = existing.shipped_at
+                updated = True
+        
         # Update other timestamps if not set
         if not existing.rts_time:
             rts_ts = self._extract_timestamp(raw, 'rts_time')
@@ -660,54 +683,51 @@ class OrderSyncService:
             if not hasattr(client, "get_reverse_orders"):
                 return stats
 
-            cursor = None
-            has_more = True
+            # get_reverse_orders handles pagination internally and returns all results
+            # So we call it ONCE, no loop needed here
+            resp = await client.get_reverse_orders(time_from, time_to)
+            if not resp:
+                return stats
+                
+            returns_list = resp.get("returns", [])
+            logger.info(f"Sync returns: fetched {len(returns_list)} return/cancellation records")
             
-            while has_more:
-                resp = await client.get_reverse_orders(time_from, time_to, cursor)
-                if not resp:
-                    break
-                    
-                returns_list = resp.get("returns", []) 
+            for ret in returns_list:
+                stats["fetched"] += 1
+                order_id = ret.get("order_id")
                 
-                cursor = resp.get("next_page_token")
-                has_more = bool(cursor)
-                
-                for ret in returns_list:
-                    stats["fetched"] += 1
-                    order_id = ret.get("order_id")
+                if order_id:
+                    # Find Order
+                    order = self.db.query(OrderHeader).filter(
+                        OrderHeader.external_order_id == order_id
+                    ).first()
                     
-                    if order_id:
-                        # Find Order
-                        order = self.db.query(OrderHeader).filter(
-                            OrderHeader.external_order_id == order_id
-                        ).first()
+                    if order and order.status_normalized not in ["RETURNED", "TO_RETURN", "CANCELLED", "DELIVERY_FAILED"]:
+                        tiktok_status = ret.get('return_status', 'UNKNOWN')
+                        return_type = ret.get('return_type', 'UNKNOWN')
+                        return_reason = ret.get('return_reason', '')
                         
-                        if order and order.status_normalized not in ["RETURNED", "TO_RETURN", "CANCELLED", "DELIVERY_FAILED"]:
-                            tiktok_status = ret.get('return_status', 'UNKNOWN')
-                            return_type = ret.get('return_type', 'UNKNOWN')
-                            return_reason = ret.get('return_reason', '')
-                            
-                            # If it's a cancellation, set to CANCELLED
-                            if "CANCEL" in tiktok_status:
-                                order.status_normalized = "CANCELLED"
-                                order.status_raw = f"REVERSE_{tiktok_status}"
-                                stats["updated"] += 1
-                            # DELIVERY_FAILED: Customer didn't receive parcel (product coming back)
-                            elif "not_received" in return_reason:
-                                order.status_normalized = "DELIVERY_FAILED"
-                                order.status_raw = f"REVERSE_{tiktok_status}"
-                                stats["updated"] += 1
-                            # Physical return (product coming back) -> TO_RETURN
-                            elif return_type == "RETURN_AND_REFUND":
-                                order.status_normalized = "TO_RETURN"
-                                order.status_raw = f"REVERSE_{tiktok_status}"
-                                stats["updated"] += 1
-                            # Refund only (no product return) -> RETURNED
-                            else:
-                                order.status_normalized = "RETURNED"
-                                order.status_raw = f"REVERSE_{tiktok_status}"
-                                stats["updated"] += 1
+                        # If it's a cancellation, set to CANCELLED
+                        if "CANCEL" in tiktok_status:
+                            order.status_normalized = "CANCELLED"
+                            order.status_raw = f"REVERSE_{tiktok_status}"
+                            stats["updated"] += 1
+                        # DELIVERY_FAILED: Customer didn't receive parcel (product coming back)
+                        elif "not_received" in return_reason:
+                            order.status_normalized = "DELIVERY_FAILED"
+                            order.status_raw = f"REVERSE_{tiktok_status}"
+                            stats["updated"] += 1
+                        # Physical return (product coming back) -> TO_RETURN
+                        elif return_type == "RETURN_AND_REFUND":
+                            order.status_normalized = "TO_RETURN"
+                            order.status_raw = f"REVERSE_{tiktok_status}"
+                            stats["updated"] += 1
+                        # Refund only (no product return) -> RETURNED
+                        else:
+                            order.status_normalized = "RETURNED"
+                            order.status_raw = f"REVERSE_{tiktok_status}"
+                            stats["updated"] += 1
+
             
             self.db.commit()
             

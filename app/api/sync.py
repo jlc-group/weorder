@@ -155,11 +155,33 @@ async def trigger_sync(
 async def get_sync_status(db: Session = Depends(get_db)):
     """
     Get current sync status and last sync info.
+    Uses DB-based check instead of in-memory flag for reliability.
     """
-    global _current_sync_id
+    from datetime import timedelta
     
     # Get last sync
     last_sync = db.query(SyncLog).order_by(desc(SyncLog.started_at)).first()
+    
+    # Check for RUNNING syncs in DB (more reliable than in-memory flag)
+    running_sync = db.query(SyncLog).filter(
+        SyncLog.status == SyncStatus.RUNNING.value
+    ).order_by(desc(SyncLog.started_at)).first()
+    
+    # Auto-expire stuck syncs older than 10 minutes (reduced from 30)
+    if running_sync:
+        sync_started = running_sync.started_at
+        if sync_started.tzinfo is None:
+            sync_started = sync_started.replace(tzinfo=timezone.utc)
+        
+        age = datetime.now(timezone.utc) - sync_started
+        if age > timedelta(minutes=10):
+            # Mark as failed - stuck too long
+            running_sync.status = SyncStatus.FAILED.value
+            running_sync.completed_at = datetime.now(timezone.utc)
+            running_sync.error_message = "Auto-expired: stuck for over 10 minutes"
+            db.commit()
+            running_sync = None
+            logger.warning("Auto-expired stuck sync job")
     
     last_sync_info = None
     if last_sync:
@@ -172,8 +194,8 @@ async def get_sync_status(db: Session = Depends(get_db)):
         }
     
     return SyncStatusResponse(
-        is_running=_current_sync_id is not None,
-        current_sync_id=_current_sync_id,
+        is_running=running_sync is not None,
+        current_sync_id=str(running_sync.id) if running_sync else None,
         last_sync=last_sync_info
     )
 
@@ -200,3 +222,137 @@ async def get_sync_history(
         }
         for log in logs
     ]
+
+
+@router.post("/reset")
+async def reset_stuck_sync(db: Session = Depends(get_db)):
+    """
+    Force reset any stuck sync jobs.
+    Use this when sync is stuck in 'running' state.
+    """
+    global _current_sync_id
+    
+    # Find all running syncs
+    running_syncs = db.query(SyncLog).filter(
+        SyncLog.status == SyncStatus.RUNNING.value
+    ).all()
+    
+    reset_count = 0
+    for sync in running_syncs:
+        sync.status = SyncStatus.FAILED.value
+        sync.completed_at = datetime.now(timezone.utc)
+        sync.error_message = "Force reset by user"
+        reset_count += 1
+    
+    # Clear in-memory flag
+    _current_sync_id = None
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": f"Reset {reset_count} stuck sync job(s)",
+        "reset_count": reset_count
+    }
+
+@router.post("/pending")
+async def sync_pending_orders(
+    db: Session = Depends(get_db)
+):
+    """
+    Sync ALL pending orders from TikTok (orders waiting to be shipped).
+    Uses status filter instead of time range to catch old pending orders.
+    """
+    from app.models.integration import PlatformConfig
+    from app.integrations.tiktok import TikTokClient
+    from app.services.sync_service import OrderSyncService
+    from app.models.master import Company
+    from datetime import datetime, timedelta
+    
+    # Get TikTok config
+    config = db.query(PlatformConfig).filter(
+        PlatformConfig.platform == 'tiktok',
+        PlatformConfig.is_active == True
+    ).first()
+    
+    if not config:
+        return {"error": "No active TikTok configuration"}
+    
+    # Get company
+    company = db.query(Company).first()
+    if not company:
+        return {"error": "No company configured"}
+    
+    # Initialize client
+    client = TikTokClient(
+        app_key=config.app_key,
+        app_secret=config.app_secret,
+        shop_id=config.shop_id,
+        access_token=config.access_token,
+        refresh_token=config.refresh_token
+    )
+    
+    # Initialize sync service
+    service = OrderSyncService(db)
+    
+    stats = {
+        "fetched": 0,
+        "created": 0,
+        "updated": 0,
+        "errors": 0
+    }
+    
+    # Fetch orders by status (no time limit!)
+    # TikTok API supports filtering by status: AWAITING_SHIPMENT, AWAITING_COLLECTION
+    statuses_to_sync = ['AWAITING_SHIPMENT', 'AWAITING_COLLECTION']
+    
+    for status in statuses_to_sync:
+        cursor = None
+        has_more = True
+        page = 0
+        
+        while has_more:
+            page += 1
+            try:
+                # Get orders with status filter (no time range = all pending)
+                result = await client.get_orders(
+                    status=status,
+                    cursor=cursor,
+                    page_size=100,
+                    use_update_time=False  # Don't use time filter
+                )
+                
+                orders = result.get("orders", [])
+                cursor = result.get("next_cursor")
+                has_more = result.get("has_more", False) and cursor
+                
+                stats["fetched"] += len(orders)
+                
+                # Process each order
+                for raw_order in orders:
+                    try:
+                        # Normalize order
+                        normalized = client.normalize_order(raw_order)
+                        if normalized:
+                            created, updated = await service._process_order(normalized, company.id)
+                            if created:
+                                stats["created"] += 1
+                            elif updated:
+                                stats["updated"] += 1
+                    except Exception as e:
+                        stats["errors"] += 1
+                        logger.error(f"Error processing order: {e}")
+                
+                # Commit after each page
+                db.commit()
+                
+            except Exception as e:
+                logger.error(f"Error fetching {status} orders page {page}: {e}")
+                stats["errors"] += 1
+                break
+    
+    return {
+        "message": "Pending orders sync completed",
+        "stats": stats
+    }
+
