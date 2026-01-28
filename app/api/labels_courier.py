@@ -124,6 +124,64 @@ async def get_courier_summary(
     }
 
 
+@router.get("/sku-summary")
+async def get_sku_summary(
+    courier: str = Query(..., description="Courier code or ID"),
+    status: str = Query("READY_TO_SHIP", description="Order status"),
+    channel: Optional[str] = Query(None, description="Platform: tiktok, shopee, lazada, or None for all"),
+    db: Session = Depends(get_db),
+):
+    """
+    Get summary of orders grouped by SKU content (for selective printing).
+    """
+    # Query orders for this courier (with eager loading for items)
+    query = db.query(OrderHeader).options(
+        joinedload(OrderHeader.items)
+    ).filter(
+        OrderHeader.status_normalized == status
+    )
+    
+    # Filter by channel if specified
+    if channel:
+        query = query.filter(OrderHeader.channel_code == channel)
+    
+    # Filter by courier (partial match for flexibility)
+    if courier and courier != "all":
+        query = query.filter(OrderHeader.courier_code.ilike(f"%{courier}%"))
+    
+    orders = query.all()
+    
+    # Group by SKU
+    sku_groups = {}
+    
+    for order in orders:
+        # Generate hashable group key
+        sku_key = get_sku_group(order.items)
+        if not sku_key:
+            sku_key = "No Items"
+            
+        if sku_key not in sku_groups:
+            sku_groups[sku_key] = {
+                "sku_key": sku_key,
+                "display_name": sku_key.replace(",", ", "),
+                "items": [{"sku": i.sku, "qty": i.quantity, "name": i.product_name} for i in order.items],
+                "count": 0,
+                "order_ids": []
+            }
+        
+        sku_groups[sku_key]["count"] += 1
+        sku_groups[sku_key]["order_ids"].append(order.external_order_id)
+        
+    # Convert to list and sort by count (desc)
+    results = list(sku_groups.values())
+    results.sort(key=lambda x: x["count"], reverse=True)
+    
+    return {
+        "total_orders": len(orders),
+        "groups": results
+    }
+
+
 @router.get("/by-courier")
 async def get_labels_by_courier(
     courier: str = Query(..., description="Courier code or ID"),
@@ -292,30 +350,23 @@ async def print_batch_labels(
     db: Session = Depends(get_db),
 ):
     """
-    Generate labels for a batch of orders.
-    
-    Input:
-    {
-        "courier": "J&T Express",
-        "status": "READY_TO_SHIP",
-        "channel": "tiktok",
-        "max_per_file": 100,  // Split into multiple files
-        "sort_by_sku": true
-    }
-    
-    Returns: Summary with download links
+    Generate labels for a batch of orders with SKU preview per file.
     """
     courier = data.get("courier")
     status = data.get("status", "READY_TO_SHIP")
-    channel = data.get("channel", "tiktok")
-    max_per_file = min(data.get("max_per_file", 100), 100)
+    channel = data.get("channel")
+    max_per_file = min(data.get("max_per_file", 50), 100)
     sort_by_sku = data.get("sort_by_sku", True)
     
-    # Query orders
-    query = db.query(OrderHeader).filter(
-        OrderHeader.status_normalized == status,
-        OrderHeader.channel_code == channel
+    # Query orders WITH items for SKU grouping
+    query = db.query(OrderHeader).options(
+        joinedload(OrderHeader.items)
+    ).filter(
+        OrderHeader.status_normalized == status
     )
+    
+    if channel:
+        query = query.filter(OrderHeader.channel_code == channel)
     
     if courier:
         query = query.filter(OrderHeader.courier_code.ilike(f"%{courier}%"))
@@ -323,11 +374,53 @@ async def print_batch_labels(
     orders = query.all()
     
     if not orders:
-        return {"error": "No orders found", "total": 0}
+        return {"error": "No orders found", "total_orders": 0, "files": []}
     
-    # Calculate batches
+    # Sort by SKU group if requested
+    if sort_by_sku:
+        orders_with_group = []
+        for order in orders:
+            sku_group = get_sku_group(order.items)
+            orders_with_group.append({
+                "order": order,
+                "sku_group": sku_group
+            })
+        orders_with_group.sort(key=lambda x: x["sku_group"])
+        orders = [o["order"] for o in orders_with_group]
+    
+    # Split into batches and collect SKU preview
     total_orders = len(orders)
-    total_pages = (total_orders + max_per_file - 1) // max_per_file
+    files = []
+    
+    for page_idx in range(0, total_orders, max_per_file):
+        page_orders = orders[page_idx:page_idx + max_per_file]
+        page_num = (page_idx // max_per_file) + 1
+        
+        # Collect SKU counts for this batch
+        sku_counts = {}
+        for order in page_orders:
+            for item in order.items:
+                if item.sku:
+                    key = item.sku
+                    if key not in sku_counts:
+                        sku_counts[key] = {
+                            "sku": item.sku,
+                            "name": item.product_name or item.sku,
+                            "qty": 0,
+                            "orders": 0
+                        }
+                    sku_counts[key]["qty"] += item.quantity
+                    sku_counts[key]["orders"] += 1
+        
+        # Sort by quantity (top SKUs first)
+        top_skus = sorted(sku_counts.values(), key=lambda x: -x["qty"])[:5]
+        
+        files.append({
+            "page": page_num,
+            "orders": len(page_orders),
+            "url": f"/api/labels/by-courier?courier={courier or ''}&status={status}&channel={channel or ''}&page={page_num}&per_page={max_per_file}&sort_by_sku={sort_by_sku}",
+            "preview": top_skus
+        })
     
     return {
         "courier": courier,
@@ -335,13 +428,7 @@ async def print_batch_labels(
         "channel": channel,
         "total_orders": total_orders,
         "max_per_file": max_per_file,
-        "total_files": total_pages,
-        "files": [
-            {
-                "page": i + 1,
-                "url": f"/api/labels/by-courier?courier={courier}&status={status}&channel={channel}&page={i+1}&per_page={max_per_file}&sort_by_sku={sort_by_sku}",
-                "orders": min(max_per_file, total_orders - (i * max_per_file))
-            }
-            for i in range(total_pages)
-        ]
+        "total_files": len(files),
+        "files": files
     }
+

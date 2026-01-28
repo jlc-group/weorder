@@ -18,6 +18,7 @@ interface BatchFile {
     page: number;
     url: string;
     orders: number;
+    preview?: { sku: string; name: string; qty: number; orders: number }[];
 }
 
 const PrintLabelsPage: React.FC = () => {
@@ -31,6 +32,8 @@ const PrintLabelsPage: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [downloadingIndex, setDownloadingIndex] = useState<number | null>(null);
     const [batchSize, setBatchSize] = useState<number>(50);
+    const [printMode, setPrintMode] = useState<'batch' | 'sku'>('batch');
+    const [skuGroups, setSkuGroups] = useState<any[]>([]);
 
     // Load platform summary
     useEffect(() => {
@@ -44,12 +47,35 @@ const PrintLabelsPage: React.FC = () => {
         }
     }, [selectedPlatform, status]);
 
+    // Load SKU groups when mode is sku
+    useEffect(() => {
+        if (selectedCourier && printMode === 'sku') {
+            loadSkuGroups();
+        }
+    }, [selectedCourier, printMode, status, selectedPlatform]);
+
     const loadPlatformSummary = async () => {
         try {
             const { data } = await api.get(`/labels/platform-summary?status=${status}`);
             setPlatforms(data.platforms || []);
         } catch (e) {
             console.error('Failed to load platform summary:', e);
+        }
+    };
+
+    const loadSkuGroups = async () => {
+        setLoading(true);
+        try {
+            let url = `/labels/sku-summary?courier=${selectedCourier}&status=${status}`;
+            if (selectedPlatform) {
+                url += `&channel=${selectedPlatform}`;
+            }
+            const { data } = await api.get(url);
+            setSkuGroups(data.groups || []);
+        } catch (e) {
+            console.error('Failed to load SKU groups:', e);
+        } finally {
+            setLoading(false);
         }
     };
 
@@ -72,6 +98,7 @@ const PrintLabelsPage: React.FC = () => {
 
     const handleSelectCourier = async (courierCode: string) => {
         setSelectedCourier(courierCode);
+        setPrintMode('batch'); // Default to batch mode
         setLoading(true);
         try {
             const { data } = await api.post('/labels/print-batch', {
@@ -281,48 +308,159 @@ const PrintLabelsPage: React.FC = () => {
                 </div>
             </div>
 
-            {/* Download Section */}
-            {selectedCourier && batchFiles.length > 0 && (
-                <div className="card border-success">
-                    <div className="card-header bg-success text-white d-flex justify-content-between align-items-center">
-                        <h5 className="mb-0">
-                            <i className="bi bi-download me-2"></i>
-                            ดาวน์โหลด PDF ({batchFiles.length} ไฟล์, {totalOrders} orders)
-                        </h5>
-                        <button
-                            className="btn btn-light btn-lg"
-                            onClick={handleDownloadAll}
-                        >
-                            <i className="bi bi-cloud-download me-2"></i>
-                            Download All
-                        </button>
+            {/* Mode Selection & Results */}
+            {selectedCourier && (
+                <div className="card shadow-sm">
+                    <div className="card-header bg-white p-0">
+                        <ul className="nav nav-tabs card-header-tabs m-0 px-3 pt-3">
+                            <li className="nav-item">
+                                <a
+                                    className={`nav-link py-3 fw-bold ${printMode === 'batch' ? 'active text-primary' : 'text-muted'}`}
+                                    onClick={() => setPrintMode('batch')}
+                                    style={{ cursor: 'pointer' }}
+                                >
+                                    <i className="bi bi-files me-2"></i>
+                                    แยกตามไฟล์ (Batch)
+                                </a>
+                            </li>
+                            <li className="nav-item">
+                                <a
+                                    className={`nav-link py-3 fw-bold ${printMode === 'sku' ? 'active text-primary' : 'text-muted'}`}
+                                    onClick={() => setPrintMode('sku')}
+                                    style={{ cursor: 'pointer' }}
+                                >
+                                    <i className="bi bi-box-seam me-2"></i>
+                                    แยกตามสินค้า (SKU Group)
+                                </a>
+                            </li>
+                        </ul>
                     </div>
-                    <div className="card-body">
-                        <div className="row g-3">
-                            {batchFiles.map((file, index) => (
-                                <div key={file.page} className="col-md-3">
-                                    <button
-                                        className={`btn w-100 py-3 ${downloadingIndex === index ? 'btn-success' : 'btn-outline-success'}`}
-                                        onClick={() => handleDownloadFile(file, index)}
-                                        disabled={downloadingIndex === index}
-                                    >
-                                        {downloadingIndex === index ? (
-                                            <>
-                                                <span className="spinner-border spinner-border-sm me-2"></span>
-                                                กำลังดาวน์โหลด...
-                                            </>
-                                        ) : (
-                                            <>
-                                                <i className="bi bi-file-pdf fs-4 d-block mb-1"></i>
-                                                <strong>ไฟล์ {file.page}</strong>
-                                                <br />
-                                                <small>{file.orders} ใบ</small>
-                                            </>
-                                        )}
-                                    </button>
+
+                    <div className="card-body bg-light">
+                        {printMode === 'batch' ? (
+                            batchFiles.length > 0 ? (
+                                <div>
+                                    <div className="d-flex justify-content-between align-items-center mb-4">
+                                        <h5 className="mb-0 text-success">
+                                            <i className="bi bi-check-circle-fill me-2"></i>
+                                            พร้อมดาวน์โหลด {batchFiles.length} ไฟล์ ({totalOrders} orders)
+                                        </h5>
+                                        <button
+                                            className="btn btn-success btn-lg shadow-sm"
+                                            onClick={handleDownloadAll}
+                                        >
+                                            <i className="bi bi-cloud-download me-2"></i>
+                                            Download All
+                                        </button>
+                                    </div>
+                                    <div className="row g-3">
+                                        {batchFiles.map((file, index) => (
+                                            <div key={file.page} className="col-md-6 col-lg-4">
+                                                <div className={`card h-100 shadow-sm ${downloadingIndex === index ? 'border-success' : ''}`}>
+                                                    <div className="card-header bg-white d-flex justify-content-between align-items-center py-2">
+                                                        <div>
+                                                            <i className="bi bi-file-earmark-pdf text-danger me-2"></i>
+                                                            <strong>ไฟล์ {file.page}</strong>
+                                                            <span className="badge bg-secondary ms-2">{file.orders} ใบ</span>
+                                                        </div>
+                                                        <button
+                                                            className={`btn btn-sm ${downloadingIndex === index ? 'btn-success' : 'btn-outline-success'}`}
+                                                            onClick={() => handleDownloadFile(file, index)}
+                                                            disabled={downloadingIndex === index}
+                                                        >
+                                                            {downloadingIndex === index ? (
+                                                                <span className="spinner-border spinner-border-sm"></span>
+                                                            ) : (
+                                                                <><i className="bi bi-download me-1"></i>Download</>
+                                                            )}
+                                                        </button>
+                                                    </div>
+                                                    <div className="card-body py-2">
+                                                        {file.preview && file.preview.length > 0 ? (
+                                                            <div className="small">
+                                                                <div className="text-muted mb-1">สินค้าหลัก:</div>
+                                                                {file.preview.slice(0, 3).map((p, i) => (
+                                                                    <div key={i} className="d-flex justify-content-between align-items-center py-1 border-bottom">
+                                                                        <span className="text-truncate" style={{ maxWidth: '180px' }} title={p.name}>
+                                                                            <span className="text-primary fw-bold">{p.sku}</span>
+                                                                            <span className="text-muted ms-1 small">{p.name?.substring(0, 20)}</span>
+                                                                        </span>
+                                                                        <span className="badge bg-dark">{p.qty} ชิ้น</span>
+                                                                    </div>
+                                                                ))}
+                                                                {file.preview.length > 3 && (
+                                                                    <div className="text-muted small mt-1">+{file.preview.length - 3} รายการอื่น</div>
+                                                                )}
+                                                            </div>
+                                                        ) : (
+                                                            <div className="text-muted small">ไม่มีข้อมูลสินค้า</div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
-                            ))}
-                        </div>
+                            ) : (
+                                <div className="text-center py-5">
+                                    <i className="bi bi-inbox fs-1 text-muted d-block mb-3"></i>
+                                    <p className="text-muted">ไม่พบออเดอร์ในเงื่อนไขนี้</p>
+                                </div>
+                            )
+                        ) : (
+                            /* SKU MODE */
+                            <div className="table-responsive bg-white rounded shadow-sm">
+                                <table className="table table-hover align-middle mb-0">
+                                    <thead className="bg-light text-muted">
+                                        <tr>
+                                            <th className="py-3 ps-4">รายการสินค้า (SKU Group)</th>
+                                            <th className="py-3 text-center" style={{ width: '150px' }}>จำนวนออเดอร์</th>
+                                            <th className="py-3 text-end pe-4" style={{ width: '200px' }}>ดาวน์โหลด</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {skuGroups.length === 0 ? (
+                                            <tr>
+                                                <td colSpan={3} className="text-center py-5 text-muted">
+                                                    กำลังโหลดข้อมูลสินค้า...
+                                                </td>
+                                            </tr>
+                                        ) : (
+                                            skuGroups.map((group, idx) => (
+                                                <tr key={idx}>
+                                                    <td className="ps-4">
+                                                        <div className="d-flex flex-column gap-2 py-2">
+                                                            {group.items.map((item: any, i: number) => (
+                                                                <div key={i} className="d-flex align-items-center">
+                                                                    <span className="badge bg-secondary me-2">{item.qty} ชิ้น</span>
+                                                                    <span className="fw-bold me-2 text-primary">{item.sku}</span>
+                                                                    <span className="text-muted small text-truncate" style={{ maxWidth: '300px' }}>{item.name}</span>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </td>
+                                                    <td className="text-center">
+                                                        <span className="badge bg-dark fs-6 pill px-3 py-2">{group.count}</span>
+                                                    </td>
+                                                    <td className="text-end pe-4">
+                                                        <button
+                                                            className="btn btn-outline-primary btn-sm"
+                                                            onClick={() => {
+                                                                const ids = group.order_ids.join(',');
+                                                                window.open(`http://localhost:9203/api/orders/batch-labels?ids=${ids}&format=pdf`, '_blank');
+                                                            }}
+                                                        >
+                                                            <i className="bi bi-printer me-2"></i>
+                                                            พิมพ์ ({group.count})
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
